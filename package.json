@@ -1,0 +1,19 @@
+{
+  "name": "flow-scene-builder",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@ffmpeg/core": "0.12.10"
+  },
+  "description": "macOS Chrome extension and local companion for Google Flow video scenes",
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Scene Builder",
+  "version": "0.3.0",
+  "description": "Encadeia cenas a partir de uma imagem no Flow e monta um MP4 localmente.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "scripting",
+    "debugger",
+    "downloads",
+    "nativeMessaging",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "https://labs.google/*",
+    "https://flow-content.google/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Abrir Flow Scene Builder"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp5tYA7iAjt87Ix2O7lk1cK+N/jjBSRT14gAgkrK/wz/vph4+i8vVeNv7wI3tt1a8X6kB4Mh1y497DQgqI0kF1y7wrAmYX6OKNvf2rq0NbEC1mO+eG+MiA8+FQ22WbtRdQPRU/syvQmcXYig94poxnSRwCM0rtL7523tlP5FUdNqANYE0hQFFRbTNrEjB5ho31X1AJWHUeEpvwOK2ySKTzkoZ3CpYGiup+FihNfGBhTeiDa6s05vS9vTYA28rOH+MgHnfdjj+U9oPvQavwWHKl8k6Nasw/npJHhKHW44JgZp4YPAn5GAQea0N8kHwqXQNI4JWvFkUnzGbqCtzBY/aoQIDAQAB"
+}

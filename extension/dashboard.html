@@ -1,0 +1,26 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Flow Scene Builder</title><link rel="stylesheet" href="style.css"></head>
+<body><main>
+<header><div class="logo">F<span>↗</span></div><div><p class="eyebrow">ESTÚDIO DE CRIATIVOS</p><h1>Flow Scene Builder</h1></div><span class="pill">Processamento local</span></header>
+<div class="intro"><h2>Um cenário. Uma sequência completa.</h2><p>Envie a imagem, escolha seu preset e receba as cenas juntas em um MP4.</p></div>
+<div class="layout"><section class="card">
+<div class="section_title"><span class="step">01</span><h3>Seu cenário</h3></div>
+<label class="upload" id="dropzone"><input id="image" type="file" accept="image/png,image/jpeg,image/webp"><img id="preview" hidden alt="Prévia do cenário"><span id="image_label">Escolher imagem do cenário</span><small>PNG, JPG ou WebP · até 15 MB</small></label>
+<label>Nome do criativo<input id="name" placeholder="Ex.: receita_lago_01" value="receita_01"></label>
+<div class="section_title"><span class="step">02</span><h3>Preset de cenas</h3></div>
+<label>Preset<input id="preset_name"></label>
+<div class="row"><label>Modelo<select id="model"><option value="lite">Veo 3.1 Lite normal</option><option value="lower">Veo 3.1 Lite Lower Priority</option></select></label><label>Cenas<select id="count"><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option></select></label></div>
+<p class="note" id="cost"></p><p class="spec">720p · 9:16 · 8 segundos por cena · x1</p>
+<div id="prompts"></div>
+<p class="note">O texto 1080x1920 dos prompts é ajustado para 720x1280 somente no envio. O preset original fica salvo.</p>
+<div class="row"><button class="secondary" id="save_preset">Salvar preset</button><button class="ghost" id="export_preset">Exportar</button><label class="button ghost">Importar<input id="import_preset" type="file" accept="application/json" hidden></label></div>
+<button id="start" class="primary">Criar sequência no Flow ↗</button>
+<p class="note">Mantenha esta aba e a aba do Flow abertas. Use a mesma conta e não gere outros vídeos no projeto da sequência.</p>
+</section><section class="right"><div class="card">
+<div class="section_title"><span class="step">03</span><h3>Acompanhe a sequência</h3></div>
+<div class="chain"><span>Imagem → Cena 1</span><span>Imagem → Cena 2 → último frame → Cena 3 → …</span></div>
+<div id="status" role="status" aria-live="polite">Pronto para receber sua imagem.</div><ol id="scene_status"></ol>
+<div class="row"><button id="pause" class="secondary" disabled>Pausar</button><button id="resume" class="secondary" disabled>Retomar</button><button id="diagnose" class="ghost" disabled>Diagnóstico</button></div>
+<div id="downloads"></div>
+</div><div class="card history"><h3>Sequências salvas neste navegador</h3><div id="history"></div></div></section></div>
+<footer>As cenas são geradas pela sua sessão do Flow. Frames e MP4 são processados neste computador.</footer>
+</main><script type="module" src="dashboard.js"></script></body></html>
