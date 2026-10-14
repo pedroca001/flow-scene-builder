@@ -111,7 +111,7 @@ def evaluate(candidates,number,directory,config=None):
         (directory/f"{c['label']}_frames.json").write_text(json.dumps(info))
         boards.extend(Path(path) for path in info['files'])
     labels=[c['label'] for c in candidates]
-    prompt=f"Compare {len(candidates)} alternativas da cena {number}. Acao desejada: {INTENTS[number]}\n"
+    prompt=f"Compare {len(candidates)} alternativas da cena {number}. Acao desejada: {config.get('intents', list(INTENTS.values()))[number-1]}\n"
     prompt+=f"Cada candidato tem {frames} frames cronologicos, divididos em paginas consecutivas. Letras, indices e segundos estao impressos. Leia cada pagina esquerda para direita, cima para baixo, acompanhando o mesmo candidato ate o ultimo frame.\n"
     prompt+='Indisponiveis: '+(', '.join(c['label'] for c in candidates if c['status']=='failed') or 'nenhum')+'. Score 0 para indisponiveis.\n'
     prompt+='Inspecione cada objeto e cada transicao. Compare os piores defeitos de TODOS antes de escolher. A candidata vencedora tambem precisa ter seus defeitos explicitados. Nenhuma regeneracao; escolha obrigatoria. Responda somente JSON.'

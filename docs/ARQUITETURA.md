@@ -1,5 +1,9 @@
 # Arquitetura e manutencao
 
+## Atualizacao 2026-10-01
+
+[PREPARACAO_CONTINUA.md](PREPARACAO_CONTINUA.md) controla o modo explicito continuo, prepare-only/activate, conta vinculada por email, teto de creditos, pausa persistente por quota e exportacao ao editor. Contratos legados abaixo continuam para jobs existentes; não presumir Lower Priority disponivel na conta atual. Novos testes: 31 Python, 22 JS e smoke DOM. Piloto real novo ainda pendente.
+
 ```text
 Pedido no Codex -> scripts/flow.sh -> bridge.py -> fila local
                            Chrome MV3 <-> Native Messaging

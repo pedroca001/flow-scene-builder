@@ -90,15 +90,27 @@ def migrate(folder):
 
 def validate_preset(preset):
     prompts=preset.get('prompts')
-    if not isinstance(prompts,list) or not 2<=len(prompts)<=6 or any(not isinstance(p,str) or not p.strip() for p in prompts):
-        raise ValueError('Preset deve conter de 2 a 6 prompts preenchidos.')
-    if preset.get('model')!='lower':raise ValueError('O fluxo Codex usa somente Lite Lower Priority.')
+    if not isinstance(prompts,list) or not 1<=len(prompts)<=6 or any(not isinstance(p,str) or not p.strip() for p in prompts):
+        raise ValueError('Preset deve conter de 1 a 6 prompts preenchidos.')
+    seconds=preset.get('seconds',8)
+    if type(seconds) is not int or seconds not in (4,6,8):raise ValueError('Duracao explicita deve ser 4, 6 ou 8 segundos.')
+    intents=preset.get('intents')
+    if intents is not None and (not isinstance(intents,list) or len(intents)!=len(prompts) or any(not isinstance(i,str) or not i.strip() for i in intents)):raise ValueError('Intents precisam corresponder aos prompts.')
+    if preset.get('model')!='lower':raise ValueError('Preset fonte deve preservar Lite Lower Priority; modelo operacional e explicito no job.')
 
-def prepare(image, name, preset_file=ROOT/'presets/ugc_ingredientes.json', downloads=None, project=DEFAULT_PROJECT, outputs=1):
+def prepare(image, name, preset_file=ROOT/'presets/ugc_ingredientes.json', downloads=None, project=DEFAULT_PROJECT, outputs=1, mode='legacy', account_email=None, home=None, model='lower', max_total_credits=0):
     if outputs not in (1,3,4):raise ValueError("Use x1, x3 ou x4.")
+    if mode not in ('legacy','frames_continuous'):raise ValueError('Modo invalido.')
+    if model not in ('lower','lite'):raise ValueError('Modelo invalido.')
+    if type(max_total_credits) is not int or max_total_credits<0 or (model=='lower' and max_total_credits!=0):raise ValueError('Teto de creditos invalido.')
+    if model=='lite' and max_total_credits==0:raise ValueError('Lite pago exige teto explicito e autorizacao antes de ativar.')
+    if account_email is not None and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',account_email):raise ValueError('Email de conta invalido.')
+    from settings import validate_home
+    home=validate_home(home or DEFAULT_HOME)
     from PIL import Image, ImageOps
     source=Path(image).expanduser().resolve()
     preset=json.loads(Path(preset_file).read_text(encoding='utf8'));validate_preset(preset)
+    if preset.get('required_mode') and preset['required_mode']!=mode:raise ValueError('Preset exige modo '+preset['required_mode'])
     if not source.is_file():raise ValueError('Imagem base nao encontrada.')
     if project is not None and not re.fullmatch(r'https://flow\.google\.com/(?:u/\d+/)?project/[A-Za-z0-9_-]+',project):raise ValueError('URL de projeto Flow invalida.')
     with Image.open(source) as im:
@@ -113,27 +125,41 @@ def prepare(image, name, preset_file=ROOT/'presets/ugc_ingredientes.json', downl
     else:raise RuntimeError('Nao foi possivel criar pasta exclusiva.')
     original='imagem_original'+source.suffix.lower();shutil.copy2(source,folder/original)
     work=work_dir(folder);work.mkdir(parents=True,exist_ok=True)
-    normalized.save(work/'cena_01_inicio.png');shutil.copy2(work/'cena_01_inicio.png',work/'cena_02_inicio.png')
+    normalized.save(work/'cena_01_inicio.png')
+    if mode=='legacy':shutil.copy2(work/'cena_01_inicio.png',work/'cena_02_inicio.png')
     (work/'prompts.json').write_text(json.dumps(preset,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
     state={'version':2,'name':slug(name),'created':now(),'project':project,'model':'Veo 3.1 - Lite [Lower Priority]',
-           'resolution':'720p','aspect_ratio':'9:16','duration_seconds':8,'outputs_per_prompt':outputs,'credits_per_generation':0,
+           'resolution':'720p','aspect_ratio':'9:16','duration_seconds':preset.get('seconds',8),'outputs_per_prompt':outputs,'credits_per_generation':0,
            'original':original,'original_sha256':digest(folder/original),'status':'ready','scenes':[]}
+    state['mode']=mode;state['account_email']=account_email;state['model_key']=model
+    if model=='lite':state['model']='Veo 3.1 - Lite';state['credits_per_generation']=None
+    state['max_total_credits']=max_total_credits;state['credits_reserved']=0
+    state['preset_sha256']=digest(preset_file)
     state['project_mode']='existing' if project else 'new'
-    state['project_creation']={'status':'ready' if project else 'pending','home':DEFAULT_HOME}
+    state['project_creation']={'status':'ready' if project else 'pending','home':home}
     for i,prompt in enumerate(preset['prompts'],1):
-        state['scenes'].append({'number':i,'source':'original' if i<=2 else f'last_frame_scene_{i-1:02d}',
+        state['scenes'].append({'number':i,'source':'original' if i==1 or (mode=='legacy' and i==2) else f'last_frame_scene_{i-1:02d}',
           'start_image':str(work/f'cena_{i:02d}_inicio.png'),'video':f'cena_{i:02d}.mp4','last_frame':str(work/f'cena_{i:02d}_ultimo_frame.png'),
           'prompt':re.sub(r'1080\s*[x×]\s*1920','720x1280',prompt,flags=re.I),'status':'ready'})
     if outputs>1:
         state['evaluation']={'model':'gpt-5.6-terra','frames':20 if outputs==3 else 15,'effort':'medium' if outputs==3 else 'low'}
+    if outputs>1 and preset.get('intents'):state['evaluation']['intents']=preset['intents']
     write_state(folder,state);return folder
 
 def next_scene(folder):
     folder,state=read_state(folder)
     for s in state['scenes']:
         if s['status']!='complete':
-            result={**s,'evaluation':state.get('evaluation',{}),'existing_image_name':state.get('existing_image_name') if s['number']<=2 else None,'outputs_per_prompt':state.get('outputs_per_prompt',1),'folder':str(folder),'project':state['project'],'start_image_path':str(folder/s['start_image']),
+            result={**s,'scene_count':len(state['scenes']),'duration_seconds':state.get('duration_seconds',8),'evaluation':state.get('evaluation',{}),'existing_image_name':state.get('existing_image_name') if s['source']=='original' else None,'outputs_per_prompt':state.get('outputs_per_prompt',1),'folder':str(folder),'project':state['project'],'start_image_path':str(folder/s['start_image']),
                     'ready_to_submit':s['status']=='ready' and (folder/s['start_image']).exists()}
+            harvest=s.get('recaptcha_harvest',{})
+            if harvest.get('request_aborted') is True:
+                original=harvest.get('original_failure_baseline')
+                if original is None:
+                    original=list(s.get('failure_baseline',[]))
+                    for key in harvest.get('aborted_failures',[]):
+                        if key in original:original.remove(key)
+                result['failure_baseline']=original
             return result
     return {'status':'ready_to_render' if state['status']!='complete' else 'complete','folder':str(folder)}
 
@@ -161,8 +187,9 @@ def ingest(folder,number,video,media_id=None):
         raise ValueError('Cena ja concluida. Nao substituir automaticamente por outro video.')
     if any(x['status']!='complete' for x in state['scenes'][:number-1]):raise ValueError('Importe as cenas na ordem.')
     metadata=probe(source)
-    if abs(metadata['duration']-8)>0.6 or metadata['width']!=720 or metadata['height']!=1280:
-        raise ValueError(f'Esperado 720x1280 e 8s; recebido {metadata}.')
+    seconds=state.get('duration_seconds',8)
+    if abs(metadata['duration']-seconds)>0.6 or metadata['width']!=720 or metadata['height']!=1280:
+        raise ValueError(f'Esperado 720x1280 e {seconds}s; recebido {metadata}.')
     if media_id and any(x.get('media_id')==media_id for x in state['scenes'] if x['number']!=number):raise ValueError('Esse video ja pertence a outra cena.')
     if any(x.get('sha256')==digest(source) for x in state['scenes'] if x['number']!=number):raise ValueError('Video duplicado em cenas diferentes.')
     target=folder/s['video']
@@ -172,7 +199,10 @@ def ingest(folder,number,video,media_id=None):
     # A failed extraction leaves the original MP4 in place for a safe retry.
     with tempfile.TemporaryDirectory(prefix='flow_frame_') as temp:
         frame=Path(temp)/'last.png';last_frame(target,frame);shutil.copy2(frame,folder/s['last_frame'])
-    if 2<=number<len(state['scenes']):shutil.copy2(folder/s['last_frame'],folder/state['scenes'][number]['start_image'])
+    if number<len(state['scenes']) and state['scenes'][number]['source']!='original':shutil.copy2(folder/s['last_frame'],folder/state['scenes'][number]['start_image'])
+    if s['source']!='original':
+        parent=state['scenes'][number-2]
+        s['predecessor']={'number':parent['number'],'media_id':parent.get('media_id'),'sha256':parent['sha256'],'last_frame_sha256':parent['last_frame_sha256']}
     s.update(status='complete',completed=now(),sha256=digest(target),metadata=metadata,media_id=media_id)
     s['start_sha256']=digest(folder/s['start_image']);s['last_frame_sha256']=digest(folder/s['last_frame'])
     write_state(folder,state);return s
@@ -187,10 +217,10 @@ def render(folder):
             tmp=Path(tmp);parts=[]
             for s in state['scenes']:
                 source=folder/s['video'];part=tmp/f'part_{s["number"]:02d}.mp4';parts.append(part)
-                args=['-i',source]
+                args=['-threads','2','-i',source]
                 if not s['metadata']['audio']:args+=['-f','lavfi','-i','anullsrc=r=48000:cl=stereo']
                 args+=['-map','0:v:0','-map','0:a:0' if s['metadata']['audio'] else '1:a:0',
-                  '-vf','setsar=1,fps=24','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p',
+                  '-vf','setsar=1,fps=24','-filter_threads','1','-c:v','libx264','-threads','2','-preset','fast','-crf','18','-pix_fmt','yuv420p',
                   '-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-af','apad','-t',str(s['metadata']['duration']),'-movflags','+faststart',part]
                 run_ff(args)
             listing=tmp/'concat.txt';listing.write_text('\n'.join("file '"+p.name+"'" for p in parts)+'\n')
@@ -204,6 +234,7 @@ def render(folder):
             # jobs retain their historic technical filename.
             title=state.get('project_creation',{}).get('title')
             final_name=f'{title}.mp4' if isinstance(title,str) and re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}',title) else 'video_completo.mp4'
+            if os.name == 'nt':final_name=final_name.replace(':','-')
             final=folder/final_name
             if final.exists() and state.get('final_sha256')!=digest(final):raise ValueError('MP4 final existente foi alterado. Nao sobrescrevi.')
             partial=folder/(final_name+'.part');shutil.copy2(output,partial);partial.replace(final)
@@ -221,8 +252,11 @@ def verify(folder,final=True):
         for key,hash_key in [('video','sha256'),('start_image','start_sha256'),('last_frame','last_frame_sha256')]:
             p=folder/s[key]
             if not p.exists() or digest(p)!=s[hash_key]:errors.append(f"Integridade invalida: {s[key]}")
-        if s['number']<=2:expected=Path(state['scenes'][0]['start_image'])
+        if s['source']=='original':expected=Path(state['scenes'][0]['start_image'])
         else:expected=folder/state['scenes'][s['number']-2]['last_frame']
+        if s.get('predecessor'):
+            parent=state['scenes'][s['number']-2]
+            if s['predecessor']!={'number':parent['number'],'media_id':parent.get('media_id'),'sha256':parent['sha256'],'last_frame_sha256':parent['last_frame_sha256']}:errors.append('Antecessor alterado.')
         if digest(folder/s['start_image'])!=digest(expected):errors.append(f"Origem incorreta da cena {s['number']}")
     if state.get('outputs_per_prompt',1)>1:
         for s in state['scenes']:
@@ -236,6 +270,30 @@ def verify(folder,final=True):
     if errors:raise ValueError('\n'.join(errors))
     return {'ok':True,'folder':str(folder),'scenes':len(state['scenes']),'status':state['status'],'final':str(folder/state['final']) if final else None,'metadata':state.get('final_metadata')}
 
+def export_editor(folder, output_dir, audio=None):
+    result=verify(folder);folder,state=read_state(folder)
+    meta=probe(folder/state['final'])
+    if (meta['width'],meta['height'])!=(720,1280):raise ValueError('Editor exige 720x1280.')
+    audio_seconds=None
+    if audio:
+        p=subprocess.run([ffmpeg(),'-hide_banner','-i',str(Path(audio).expanduser().resolve())],capture_output=True,text=True)
+        m=re.search(r'Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)',p.stderr)
+        if not m or 'Audio:' not in p.stderr:raise ValueError('Narracao invalida.')
+        audio_seconds=int(m[1])*3600+int(m[2])*60+float(m[3])
+        if audio_seconds>meta['duration']:raise ValueError('Narracao maior que a fonte; nao esticar nem repetir silenciosamente.')
+    destination=Path(output_dir).expanduser().resolve()
+    # Disallow writing on top of sources or to text-first canonical vaults.
+    if destination==folder or destination==work_dir(folder) or any((a/'AGENTS.md').exists() and (a/'Memoria').is_dir() for a in [destination,*destination.parents]):raise ValueError('Use destino novo de midia fora do Brain e da origem.')
+    destination.mkdir(parents=True,exist_ok=True);target=destination/state['final']
+    if target.exists():
+        if digest(target)!=state['final_sha256']:raise ValueError('Final existente difere; preservado.')
+    else:
+        with tempfile.NamedTemporaryFile(dir=destination,suffix='.part',delete=False) as stream:partial=Path(stream.name)
+        try:shutil.copy2(folder/state['final'],partial);partial.replace(target)
+        finally:partial.unlink(missing_ok=True)
+    return {'ok':True,'final':str(target),'sha256':digest(target),'source_seconds':meta['duration'],'audio_seconds':audio_seconds,
+            'editor_profile':'conservative','review_required':True,'note':'Formato e duracao conferidos; planejamento por movimento e revisao visual ainda necessarios. Nao usar vids_receita em fontes 32s.'}
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);cmd=p.add_subparsers(dest='command',required=True)
     c=cmd.add_parser('prepare');c.add_argument('--image',required=True);c.add_argument('--name',required=True);c.add_argument('--preset',default=str(ROOT/'presets/ugc_ingredientes.json'));c.add_argument('--downloads');c.add_argument('--project',default=DEFAULT_PROJECT)
@@ -243,6 +301,7 @@ def main():
         c=cmd.add_parser(name);c.add_argument('folder')
     c=cmd.add_parser('submitted');c.add_argument('folder');c.add_argument('--scene',type=int,required=True);c.add_argument('--baseline',nargs='*',default=[])
     c=cmd.add_parser('ingest');c.add_argument('folder');c.add_argument('--scene',type=int,required=True);c.add_argument('--video',required=True);c.add_argument('--media-id')
+    c=cmd.add_parser('export-editor');c.add_argument('folder');c.add_argument('--output-dir',required=True);c.add_argument('--audio')
     cmd.add_parser('doctor');args=p.parse_args()
     try:
         if args.command=='prepare':result={'folder':str(prepare(args.image,args.name,args.preset,args.downloads,args.project))}
@@ -253,6 +312,7 @@ def main():
         elif args.command=='ingest':result=ingest(args.folder,args.scene,args.video,args.media_id)
         elif args.command=='render':result=render(args.folder)
         elif args.command=='verify':result=verify(args.folder)
+        elif args.command=='export-editor':result=export_editor(args.folder,args.output_dir,args.audio)
         else:
             import PIL
             result={'ffmpeg':ffmpeg(),'pillow':PIL.__version__,'preset':str(ROOT/'presets/ugc_ingredientes.json')}

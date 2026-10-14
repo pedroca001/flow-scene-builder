@@ -10,6 +10,6 @@ if [ ! -x "$flow_python" ]; then
 fi
 cd "$flow_root"
 case "${1:-}" in
-  verify) shift; exec "$flow_python" flow_scene_builder.py verify "$@" ;;
+  verify|export-editor) exec "$flow_python" flow_scene_builder.py "$@" ;;
   *) exec "$flow_python" bridge.py "$@" ;;
 esac

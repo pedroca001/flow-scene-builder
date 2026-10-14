@@ -6,7 +6,10 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test tests/*.test.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "playwright:doctor": "node scripts/flow_playwright.mjs doctor",
+    "playwright:smoke": "node scripts/flow_playwright.mjs smoke",
+    "playwright:session": "node scripts/flow_playwright.mjs session"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "0.12.15",

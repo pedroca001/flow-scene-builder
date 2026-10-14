@@ -26,3 +26,4 @@ connection.json
 execucao.json
 native_host
 jobs/
+* (*).*

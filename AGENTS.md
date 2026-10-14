@@ -2,58 +2,76 @@
 
 ## Purpose
 
-Operar e manter o pipeline local de quatro cenas no Google Flow, com Codex como interface. Este repositorio e a fonte executavel; nao depende do Brain original.
+Operar e manter o pipeline local de geracao de videos no Google Flow via extensao Chrome descompactada e bridge local Python/Native Messaging.
 
 ## Ownership
 
-- Codigo em `codigo/flow_scene_builder` ou na raiz de codigo definida pelo usuario.
-- Instalacao: `docs/INSTALACAO_MACOS.md`. Operacao: `docs/OPERACAO_CODEX.md`.
-- Skill do projeto: `.agents/skills/gerar_video_flow/SKILL.md`.
-- Preset: `presets/ugc_ingredientes.json`. Rubrica: `presets/avaliador_realismo.md`.
-- Runtime e jobs: `~/.local/share/flow_scene_builder`, fora do repositorio.
+- Codigo em `<CODIGO_ROOT>/flow_scene_builder`.
+- Runtime e filas em `~/.local/share/flow_scene_builder` (macOS) ou `%LOCALAPPDATA%\flow_scene_builder` (Windows).
+- Extensao descompactada gerada em `package/`.
+- Presets em `presets/`.
 
 ## Local Contracts
 
-1. Cada imagem cria projeto novo pela home configurada e botao Novo projeto. Persistir intencao, aba, URL e titulo. Retomar nunca cria outro projeto para o mesmo job.
-2. Novos jobs usam x3, GPT-5.6 Terra medium e 20 frames por candidato. Preservar perfis de jobs antigos. Sem trocar modelo, prompt ou numero de cenas por conveniencia.
-3. Cenas 1/2 usam a imagem original; 3/4 usam o ultimo frame exato da vencedora anterior. O preset tem quatro cenas.
-4. Geracao somente pela UI do Chrome conectado. Validar Lower Priority, zero creditos, 720p, 9:16 e oito segundos. Nao extrair cookies nem chamar endpoints privados do Flow.
-5. Dez jobs no maximo, com abas/pastas/projetos separados. Cenas de um job sao sequenciais. Transacoes de UI permanecem serializadas por `ui_queue.js`; isso impede disputa de foco.
-6. Um lote por cena e selecao obrigatoria entre videos validos. Sem loop por qualidade. Todos falhos, identidade ambigua ou avaliador interrompido pausam e exigem diagnostico, sem criar nova geracao automaticamente.
-7. IDs permanentes vem da UI `/edit/UUID`. Nao escolher resultado por ordem do grid. Baixar a opcao original 720p do menu Flow; nao usar URL de previa.
-8. Entrega final tem nome igual ao titulo salvo do projeto, acrescido de `.mp4`. Preservar originais e arquivos de jobs antigos. Estado e frames ficam no cache tecnico, nao em Git.
-9. Nao publicar segredos, perfis, filas, projetos privados, candidatos, respostas de testes ou caminhos pessoais. `manifest.key` e chave publica para estabilizar o ID, nao segredo.
-10. Mesmo login Flow em dois Macs nao compartilha fila nem runtime. Cada maquina deve operar somente seus projetos e respeitar limites da conta.
+1. **Criacao de Projetos:** Cada imagem inicial cria um projeto exclusivo no Flow pela URL base configurada (`flow_home`) e pelo botao Novo projeto. O titulo gerado tem formato `AAAA-MM-DD HH:MM:SS.mmm`.
+2. **Modelo e Custo:** Opera preferencialmente com Veo 3.1 Lite Lower Priority (`--model lower`), validando custo zero (0 creditos) na interface antes do envio.
+3. **Continuadade das Cenas:** O fluxo gera 4 cenas de 8 segundos (modo continuo): a primeira a partir da imagem original e as seguintes a partir do ultimo frame exato extraido da cena anterior via FFmpeg.
+4. **Serializacao de UI e Concorrencia:** Multiplos trabalhos (ate `max_parallel`, default 5 a 10) rodam em paralelo na mesma janela dedicada do Chrome. Transacoes de interface (cliques, selecao de asset, anexar frame) sao serializadas pelo `ui_queue.js` para evitar disputa de foco.
+5. **Colheita Transparente de Token:** A extensao intercepta o token de validacao gerado pelo compositor no envio e despacha a geracao de forma limpa, sem exigir acao manual do operador.
+6. **Entrega Final:** Apos a conclusao das 4 cenas, o bridge concatena os videos em um MP4 final de 32 segundos (720x1280, 24fps, audio), cujo nome e o titulo do projeto.
+7. **Idempotencia e Retomada:** Nunca execute `start` novamente em uma pasta que ja tenha execucao criada. Em caso de pausa por rede ou reinicio do Chrome, use `enqueue <pasta>` para retomar do ponto onde parou.
 
 ## Work Guidance
 
-- Primeiro uso: ler instalacao, executar `sh scripts/install_macos.sh`, orientar carga de `package/` no Chrome e validar `doctor`. Nao gerar video apenas para testar instalador sem pedido.
-- Pedido de imagem/pasta: usar skill e launcher `sh scripts/flow.sh`; iniciar todo o lote, guardar paths, acompanhar `watch-batch --timeout 55`, tratar pausas individualmente e executar `verify` uma vez por final.
-- Nao carregar manifestos enormes para status. `status --folder` e `selection-report` retornam resumos. Avaliador recebe somente pranchas e rubrica, sem historico do orquestrador.
-- Reusar decisoes salvas. Se a chamada de avaliacao foi interrompida, preservar attempt/answer/selection/usage antes de qualquer manutencao; nao repetir automaticamente.
-- Quando houver auditoria solicitada, revisar videos e registrar divergencias, preservando a escolha original. Nao afirmar auditoria visual quando so acompanhou status/testes tecnicos.
-- `settings.json` local configura a home da conta e caminho do CLI. O indice `/u/N` pode diferir entre Macs. Bridge valida projeto contra a home salva no job.
-- Instalar/atualizar somente sem jobs ativos. Reload do build espera executor ocioso. Python vivo mantem modulos carregados; nao presumir que editar um arquivo atualizou esse processo.
-- Contrato de recuperacao esta em `docs/OPERACAO_CODEX.md`. Nunca mudar submitted para ready sem evidencia de que nao houve envio.
-- Atualizar este AGENTS, README e docs quando mudar comportamento duravel.
+### Operacao Basica
+
+```sh
+# 1. Iniciar trabalho individual
+sh scripts/flow.sh start --image "/caminho/img.png" --outputs 1 --model lower --mode frames_continuous --output-root "/caminho/entregas"
+
+# 2. Iniciar lote concorrente
+sh scripts/flow.sh start-batch --images "/caminho/1.png" "/caminho/2.png" --outputs 1 --model lower --mode frames_continuous --output-root "/caminho/entregas"
+
+# 3. Acompanhar execucao
+sh scripts/flow.sh watch-batch "/pasta/job_1" "/pasta/job_2" --timeout 55
+
+# 4. Checar status da fila
+sh scripts/flow.sh status --folder "/pasta/job_1"
+
+# 5. Validar integridade do MP4 final
+sh scripts/flow.sh verify "/pasta/job_1"
+
+# 6. Retomar job pausado
+sh scripts/flow.sh enqueue "/pasta/job_1"
+```
+
+### Manutencao e Build da Extensao
+
+Sempre que editar arquivos em `extension/`, compile o pacote com:
+```sh
+node scripts/build.mjs
+```
+A extensao verifica a mudanca de build via `hello` ao bridge e recarrega automaticamente em segundo plano.
 
 ## Verification
 
 ```sh
-python -m unittest discover -s tests -p 'test_*.py' -v
-node --test tests/*.test.mjs
-node scripts/build.mjs
-node scripts/verify.mjs
-node scripts/dom_smoke.mjs
-```
+# Testes Python
+~/.local/share/flow_scene_builder/venv/bin/python -m unittest discover tests
 
-Usar Python do venv instalado. Smokes precisam de Playwright e Chromium, conforme `docs/ARQUITETURA.md`. Testes locais nao provam integracao ao site: no outro Mac, validar uma imagem real antes de aumentar volume. O piloto de dez projetos concluiu, com recuperacoes supervisionadas; nao prometer operacao sem falhas.
+# Testes canonicos JavaScript
+export PATH="$HOME/.local/bin:$PATH" && node --test tests/flow_client.test.mjs tests/ui_queue.test.mjs tests/recaptcha_submission.test.mjs
+
+# Build da extensao e diagnostico de conexao
+node scripts/build.mjs
+sh scripts/flow.sh doctor
+```
 
 ## Child DOX Index
 
-- `extension/`: MV3, fila, adaptador DOM, downloads e painel de status.
-- `presets/`: prompts de geracao e rubrica visual.
-- `scripts/`: instalacao, launcher, build, pacote e smokes.
-- `tests/`: integridade de midia, selecao, concorrencia e protocolo nativo.
-- `docs/`: instalacao, operacao e arquitetura.
-- `.agents/skills/gerar_video_flow/`: skill portatil para o Codex.
+- `extension/`: Codigo-fonte da extensao Chrome (MV3, DOM, transporte, native runner).
+- `package/`: Extensao compilada pronta para carregar descompactada no Chrome.
+- `presets/`: Prompts de cenas e configuracoes de estilo.
+- `scripts/`: Scripts de instalacao, launcher (`flow.sh` / `flow.ps1`) e build.
+- `tests/`: Testes automatizados Python e JavaScript.
+- `docs/`: Documentacao operacional e de instalacao.

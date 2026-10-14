@@ -1,0 +1,3 @@
+# Pastas comuns para compatibilidade com Google Drive.
+nodeLinker: hoisted
+packageImportMethod: copy

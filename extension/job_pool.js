@@ -1,8 +1,9 @@
 // One coordinator, independent jobs. A failing job never cancels its neighbours.
 export class JobPool {
-  constructor({limit=10,claim,run,onError=()=>{},onIdle=()=>{}}){Object.assign(this,{limit,claim,run,onError,onIdle});this.active=new Map();this.filling=false;this.rerun=false;}
+  constructor({limit=10,claim,run,onError=()=>{},onIdle=()=>{},retryDelayMs=2000,setTimer=setTimeout,clearTimer=clearTimeout}){Object.assign(this,{limit,claim,run,onError,onIdle,retryDelayMs,setTimer,clearTimer});this.active=new Map();this.filling=false;this.rerun=false;this.retryTimer=null;}
   async fill(){
     if(this.filling){this.rerun=true;return;}
+    if(this.retryTimer!==null){this.clearTimer(this.retryTimer);this.retryTimer=null;}
     this.filling=true;
     try{
       do{
@@ -16,6 +17,14 @@ export class JobPool {
         }
       }while(this.rerun);
       if(!this.active.size)await this.onIdle();
-    }finally{this.filling=false;}
+    }finally{
+      this.filling=false;
+      // Admission can happen after the completion-triggered claim found no job.
+      // Keep checking vacancies while the other jobs run, without waiting for
+      // the next Chrome alarm or for a second video to finish.
+      if(this.active.size&&this.active.size<this.limit&&this.retryTimer===null){
+        this.retryTimer=this.setTimer(()=>{this.retryTimer=null;void this.fill().catch(error=>this.onError(error,{folder:''}));},this.retryDelayMs);
+      }
+    }
   }
 }

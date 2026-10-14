@@ -4,13 +4,23 @@ import {assertSettings} from '../extension/core.js';
 const require=createRequire(import.meta.url);const {chromium}=require('playwright');
 const browser=await chromium.launch({headless:true});const page=await browser.newPage();
 try{
-await page.route('https://fixture.test/',route=>route.fulfill({body:'<html></html>',contentType:'text/html'}));await page.goto('https://fixture.test/');
+await page.route('https://fixture.test/u/2/',route=>route.fulfill({body:'<html></html>',contentType:'text/html'}));await page.goto('https://fixture.test/u/2/');
 await page.setContent(`<flow-project-page><button aria-label="Settings trigger">Video · 720p · 8s x1</button><button aria-label="Select model family">Veo 3.1 - Lite [Lower Priority]</button><button role="radio" aria-checked="true"><mat-icon aria-hidden="true">videocam</mat-icon><span class="toggle-text">Video</span></button><button role="radio" aria-checked="true"><mat-icon aria-hidden="true">crop_free</mat-icon><span class="toggle-text">Frames</span></button><button role="radio" aria-checked="true">9:16</button><button role="radio" aria-checked="true">x1</button><a href="https://support.google.com/googleone?p=g1_ai_credit_menu">0 credits</a><div contenteditable="true">hello world</div><flow-video-tile style="display:block"><img alt="Generated video thumbnail" src="https://flow-content.google/image/scene-two?Signature=fixture" width="50" height="50"></flow-video-tile><flow-video-tile style="display:block"><video aria-label="Generated video" src="https://flow-content.google/video/scene-one?Signature=fixture" width="50" height="50"></video></flow-video-tile></flow-project-page>`);
 await page.evaluate(`window.fixtureDom=${flowDom.toString()}`);
 const dom=(op,args={})=>page.evaluate(({op,args})=>window.fixtureDom(op,args),{op,args});
 await page.evaluate(()=>{const item=document.createElement('mat-list-item');item.style.display='block';item.textContent='All media';item.onclick=()=>item.classList.add('mdc-list-item--activated');document.body.append(item);});
 if(await dom('allMedia')!==false||await dom('allMedia')!==true)throw Error('All media filter did not activate and confirm');
+await page.evaluate(()=>{const account=document.createElement('button');account.setAttribute('aria-label','Google Account: Fixture (owner@example.com)');account.textContent='Account';document.body.append(account);});
+const account=await dom('account');if(account.email!=='owner@example.com'||account.home!=='https://fixture.test/u/2/')throw Error('Visible account identity mismatch');
 const settings=await dom('settings');assertSettings(settings,'lower');
+await page.evaluate(()=>{
+ const tile=document.createElement('flow-error-tile');tile.style.display='block';tile.innerHTML='<p>Falha ao gerar áudio. Não houve cobrança</p><button aria-label="Tentar de novo">Retry</button>';tile.querySelector('button').onclick=()=>tile.remove();document.body.append(tile);
+ const pending=document.createElement('flow-pending-tile');pending.style.display='block';pending.textContent='100%';document.body.append(pending);
+});
+if(!await dom('pendingComplete'))throw Error('Stalled100percent card missed');
+const ptFailure=await dom('audioFailures');if(ptFailure.length!==1||!ptFailure[0].retriable)throw Error('Portuguese free retry missed');
+await dom('retryAudio',{key:ptFailure[0].key});if((await dom('audioFailures')).length)throw Error('Portuguese retry did not use correct card');
+await page.evaluate(()=>document.querySelector('flow-pending-tile').remove());
 const cards=await dom('cards');if(cards.length!==2||cards.some(c=>!/^[a-f0-9]{64}$/.test(c.key)))throw Error('Invalid card identities');
 await page.evaluate(()=>{for(const tile of document.querySelectorAll('flow-video-tile')){const clone=tile.cloneNode(true);clone.removeAttribute('data-fsb-key');tile.replaceWith(clone);}});
 if(JSON.stringify(await dom('cards'))!==JSON.stringify(cards))throw Error('Identity changed after DOM reconstruction');
@@ -24,6 +34,9 @@ await page.evaluate(()=>{const error=document.createElement('flow-error-tile');e
 const failures=await dom('audioFailures');if(failures.length!==1||!failures[0].retriable)throw Error('Confirmed audio failure not identified');
 if(await dom('blockers'))throw Error('Historical error tile was treated as an active blocker');
 await dom('retryAudio',{key:failures[0].key});if((await dom('audioFailures')).length)throw Error('Retry did not target the failed tile');
+await page.evaluate(()=>{const alert=document.createElement('div');alert.setAttribute('role','alert');alert.textContent='You have hit your limits for generating videos';document.body.append(alert);});
+if(!(await dom('blockers'))?.includes('hit your limits'))throw Error('Active quota alert missed');
+await page.evaluate(()=>document.querySelector('[role="alert"]').remove());
 const point=await dom('cardPoint',{key:cards[0].key});if(!Number.isFinite(point.x))throw Error('Card not clickable');
 await page.evaluate(()=>{document.querySelector('flow-project-page').addEventListener('drop',e=>{window.dropName=e.dataTransfer.files[0].name;});});
 await dom('dropImage',{dataUrl:'data:image/png;base64,iVBORw0KGgo=',name:'test.png'});
@@ -41,5 +54,48 @@ await page.evaluate(()=>{const input=document.createElement('input');input.setAt
 if(!await dom('setTitle',{title:'2026-09-22 18:02:54.702'}))throw Error('Title field not found');
 if(await dom('projectTitle')!=='2026-09-22 18:02:54.702')throw Error('Title appended instead of replaced');
 if(await page.locator('input[aria-label="Texto editável"]').getAttribute('data-saved')!=='2026-09-22 18:02:54.702')throw Error('Title input event missing');
-console.log('DOM_SMOKE_OK: zero-credit settings, thumbnail/video IDs, targeted card, image upload event');
+await page.evaluate(()=>{
+ const chip=document.createElement('flow-image-ingredient-chip');chip.innerHTML='<button aria-label="Elemento de imagem">Frame antigo</button>';chip.querySelector('button').onclick=()=>chip.remove();document.body.append(chip);
+ const clear=document.createElement('button');clear.setAttribute('aria-label','Apagar comando');clear.textContent='Clear';clear.onclick=()=>document.querySelector('flow-image-ingredient-chip')?.remove();document.body.append(clear);
+});
+if((await dom('removeFrames')).length!==1)throw Error('Current composer frame chip missed');
+await dom('clickControl',{names:['Clear prompt','Limpar prompt']});
+if((await dom('removeFrames')).length)throw Error('Portuguese clear left stale frame in composer');
+await page.route('https://fixture.test/image/**',route=>route.fulfill({body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j9ZkAAAAASUVORK5CYII=','base64'),contentType:'image/png'}));
+await page.evaluate(async()=>{
+ const tile=document.createElement('flow-grid-tile-container');tile.style.display='block';tile.setAttribute('aria-label','unique_frame_2.png');tile.innerHTML='<img src="https://fixture.test/image/right?Signature=source" width="20" height="20">';document.body.append(tile);
+ const chip=document.createElement('flow-image-ingredient-chip');chip.innerHTML='<img src="https://fixture.test/image/right?Signature=chip" width="20" height="20">';document.body.append(chip);
+ await Promise.all([tile,chip].map(e=>new Promise(resolve=>{const im=e.querySelector('img');if(im.complete)resolve();else im.onload=resolve;})));
+});
+if(!await dom('frameMatches',{name:'unique_frame_2.png'}))throw Error('Named auto-attached frame identity missed');
+if(await dom('frameMatches',{name:'wrong_name.png'}))throw Error('Wrong named frame accepted');
+await page.evaluate(async()=>{const im=document.querySelector('flow-image-ingredient-chip img');im.src='https://fixture.test/image/wrong';await new Promise(resolve=>{if(im.complete)resolve();else im.onload=resolve;});});
+if(await dom('frameMatches',{name:'unique_frame_2.png'}))throw Error('Stale frame identity accepted');
+if(await dom('frameSource')!=='https://fixture.test/image/wrong')throw Error('Loaded chip source not normalized');
+await page.evaluate(async()=>{
+ history.pushState({},'', '/u/2/project/fixture/edit/11111111-1111-4111-8111-111111111111');
+ document.querySelector('input[aria-label="Texto editável"]').value='unique_frame_2.png';
+ const im=document.createElement('img');im.alt='Visualização de imagem somente para leitura';im.src='https://fixture.test/image/wrong?Signature=preview';im.width=20;im.height=20;document.body.append(im);
+ await new Promise(resolve=>{if(im.complete)resolve();else im.onload=resolve;});
+});
+if(await dom('imageAssetSource',{name:'unique_frame_2.png'})!==await dom('frameSource'))throw Error('Named full preview does not identify the chip source');
+if(await dom('imageAssetSource',{name:'wrong_name.png'}))throw Error('Wrong image title accepted for preview identity');
+await page.evaluate(()=>{
+ const overlay=document.createElement('div');overlay.className='cdk-overlay-pane';overlay.innerHTML='<h2>Selecione uma imagem de frame</h2><button role="option" aria-selected="true"><span class="label">unique_frame_2.png</span></button><img alt="Prévia de unique_frame_2.png" width="20" height="20"><button aria-label="Incluir no comando">Incluir no comando</button>';
+ overlay.querySelector('[role="option"]').onclick=()=>{window.fixtureChooseCount=(window.fixtureChooseCount||0)+1;};
+ overlay.querySelector('[aria-label="Incluir no comando"]').onclick=()=>{window.fixtureConfirmCount=(window.fixtureConfirmCount||0)+1;};document.body.append(overlay);
+});
+await dom('chooseAsset',{name:'unique_frame_2.png'});
+if(await page.evaluate(()=>window.fixtureChooseCount||0))throw Error('Clicked an already selected frame again');
+await page.evaluate(()=>document.querySelector('.cdk-overlay-pane [role="option"]').setAttribute('aria-selected','false'));
+await dom('chooseAsset',{name:'unique_frame_2.png'});
+if(await page.evaluate(()=>window.fixtureChooseCount)!==1)throw Error('Did not select the requested frame');
+await dom('acceptFrame',{name:'unique_frame_2.png'});
+if(await page.evaluate(()=>window.fixtureConfirmCount||0))throw Error('Accepted frame before preview pixels loaded');
+await page.evaluate(async()=>{const im=document.querySelector('.cdk-overlay-pane img');im.src='https://fixture.test/image/wrong';await new Promise(resolve=>{if(im.complete)resolve();else im.onload=resolve;});});
+await dom('acceptFrame',{name:'wrong_name.png'});
+if(await page.evaluate(()=>window.fixtureConfirmCount||0))throw Error('Accepted preview of a different name');
+await dom('acceptFrame',{name:'unique_frame_2.png'});await dom('acceptFrame',{name:'unique_frame_2.png'});
+if(await page.evaluate(()=>window.fixtureConfirmCount)!==1)throw Error('Preview confirmation not exactly once');
+console.log('DOM_SMOKE_OK: visible account, quota alert, zero-credit settings, thumbnail/video IDs, targeted card, image upload event');
 }finally{await browser.close();}

@@ -1,74 +1,112 @@
 # Flow Scene Builder
 
-Automacao local para macOS que transforma imagens iniciais em videos de quatro cenas no Google Flow. O Codex recebe o pedido; a extensao Chrome opera a interface; Python/FFmpeg baixa, valida, extrai frames e monta o MP4. A selecao visual usa GPT-5.6 Terra pelo Codex CLI autenticado com ChatGPT.
+Automacao local para macOS e Windows que gera videos de quatro cenas continuas (ou mais cenas/hooks) no Google Flow. Uma extensao Chrome opera a interface de forma controlada enquanto o bridge Python e o FFmpeg gerenciam a fila, baixam os candidatos, extraem os frames de emenda e montam o MP4 final de 32 segundos.
 
-## Comece aqui
+O sistema opera preferencialmente com o modelo **Veo 3.1 Lite Lower Priority** (custo zero no plano Ultra).
 
-Entregue ao Codex do outro Mac esta instrucao:
+---
 
-> Leia AGENTS.md e docs/INSTALACAO_MACOS.md deste repositorio. Instale o Flow Scene Builder neste Mac, mantendo o codigo na minha pasta codigo. Confirme a conta e a pagina inicial do Flow neste perfil do Chrome, configure o Codex CLI e rode o diagnostico. Depois aguarde minha imagem ou pasta de imagens para iniciar a geracao.
+## 1. Instalacao e Requisitos
 
-- [Instalacao completa no macOS](docs/INSTALACAO_MACOS.md)
-- [Operacao e recuperacao para o Codex](docs/OPERACAO_CODEX.md)
-- [Skill incluida](.agents/skills/gerar_video_flow/SKILL.md)
-- [Arquitetura e testes](docs/ARQUITETURA.md)
+### Requisitos
+- Google Chrome aberto com a conta Google logada no Flow (`https://flow.google.com/`).
+- Python 3.10+ (recomendado 3.12).
+- FFmpeg (instalado no sistema ou via `imageio_ffmpeg`).
+- Node.js 22+.
 
-## Comportamento
-
-- Uma imagem cria um projeto novo pela home e pelo botao **Novo projeto**. Nome: `AAAA-MM-DD HH:MM:SS.mmm`, fuso America/Sao_Paulo.
-- Ate **dez trabalhos simultaneos** por maquina, cada um com projeto, aba, estado e pasta exclusivos. Transacoes da interface sao serializadas para preservar foco; geracoes e avaliacoes podem se sobrepor.
-- Quatro cenas de oito segundos. Cenas 1/2 usam a imagem original; 3/4 usam o ultimo frame exato da vencedora anterior.
-- Tres alternativas por cena. O Terra analisa **20 frames por video**, em duas pranchas, e escolhe uma. Com tres candidatos validos, sao 60 frames por cena.
-- Usa Veo 3.1 Lite Lower Priority, 720p, vertical 9:16, com custo zero confirmado na interface. Se essa opcao nao estiver disponivel, pausa; nao troca para geracao paga.
-- Escolha obrigatoria entre os candidatos disponiveis, sem loop de regeneracao por qualidade. Falhas do Flow podem reduzir as alternativas.
-- Final: aproximadamente 32 segundos, 720x1280, 24fps e audio. O nome do MP4 final e **exatamente o nome do projeto**, mais `.mp4`.
-
-O preset incluido e especifico: bancada, tigela, bicarbonato, suco, mel, limao, agua e fouet. Ele conserva marcas e acoes do roteiro original. Nao e um gerador de roteiros arbitrarios a partir de qualquer imagem. Para outro tipo de video, adapte `presets/ugc_ingredientes.json` e as descricoes `INTENTS` do avaliador de forma coerente, antes de criar novos jobs.
-
-## Instalacao rapida
-
-Requisitos: macOS, Chrome, Python 3.10+ (recomendado 3.12), Node.js 22+ com npm e Codex CLI autenticado com ChatGPT e acesso ao modelo `gpt-5.6-terra`.
-
+### No macOS
 ```sh
-mkdir -p ~/codigo
-cd ~/codigo
-git clone https://github.com/pedroca001/flow-scene-builder.git flow_scene_builder
-cd flow_scene_builder
+# 1. Instalar runtime e registrar host nativo
 sh scripts/install_macos.sh --flow-home https://flow.google.com/u/1/
-```
 
-Use a pasta `codigo` ja existente se o seu ambiente tiver outra raiz. O numero `/u/1` e a posicao da conta no Chrome, nao a identidade dela: confira a home correta nesse Mac e ajuste o argumento se necessario. O instalador prepara o runtime e registra o host nativo, mas **nao inicia geracoes**.
+# 2. Carregar extensao no Chrome
+# Abra chrome://extensions, ative "Modo do desenvolvedor" e clique em "Carregar sem compactacao",
+# selecionando a pasta package/ deste repositorio.
 
-Depois, em `chrome://extensions`, ative o modo desenvolvedor e carregue a pasta `package/` deste clone como extensao sem compactacao. Execute:
-
-```sh
+# 3. Validar conexao
 sh scripts/flow.sh doctor
 ```
 
-A instalacao completa, autenticacao e permissoes estao no [guia macOS](docs/INSTALACAO_MACOS.md). O instalador tambem disponibiliza a skill no usuario, sem sobrescrever skills existentes.
+### No Windows (PowerShell)
+```powershell
+# 1. Instalar runtime e registrar host nativo
+& .\scripts\install_windows.ps1 -FlowHome https://flow.google.com/u/1/
 
-## Gerar e acompanhar
+# 2. Carregar extensao no Chrome
+# Em chrome://extensions, carregar a pasta package/ descompactada.
 
-```sh
-sh scripts/flow.sh start --image "/caminho/imagem.png" --output-root "/caminho/entregas"
-sh scripts/flow.sh start-batch --images "/caminho/1.png" "/caminho/2.png" --output-root "/caminho/entregas"
-sh scripts/flow.sh status
-sh scripts/flow.sh watch-batch "/pasta/job_1" "/pasta/job_2" --timeout 55
-sh scripts/flow.sh verify "/pasta/job_1"
+# 3. Validar conexao
+.\scripts\flow.ps1 doctor
 ```
 
-Guarde as pastas retornadas pelo inicio. O Codex deve acompanhar ate concluir ou identificar um bloqueio concreto. Nao execute um segundo `start` para tentar recuperar uma pausa; consulte a [operacao](docs/OPERACAO_CODEX.md).
+---
 
-Cada subpasta de entrega contem a imagem original, `cena_01.mp4` a `cena_04.mp4` e o MP4 completo com data/hora. Candidatos, frames, rankings e estado ficam em `~/.local/share/flow_scene_builder/jobs/`, fora do repositorio. Nao mova uma entrega enquanto o job estiver ativo: o caminho faz parte da identidade do estado.
+## 2. Configuracao (`settings.json`)
 
-## Conta compartilhada e limites
+As configuracoes ficam salvas no runtime local em `~/.local/share/flow_scene_builder/settings.json` (ou `%LOCALAPPDATA%\flow_scene_builder\settings.json` no Windows):
 
-Cada Mac precisa da propria instalacao, login no Chrome e login do Codex. O repositorio nao leva cookies, tokens, imagens ou videos de teste. Nao copie perfis do Chrome nem credenciais entre maquinas.
+```json
+{
+  "max_parallel": 5,
+  "flow_home": "https://flow.google.com/u/1/",
+  "account_email": "seu_email@gmail.com"
+}
+```
 
-Duas maquinas podem criar projetos separados na mesma conta Flow, mas compartilham a capacidade e os limites dessa conta. O teto de dez e local, sem coordenacao entre computadores. Nao operem o mesmo projeto simultaneamente. Comece o outro Mac com uma imagem; aumente o lote depois de validar a instalacao.
+- `max_parallel`: numero de geracoes concorrentes simultaneas (recomendado entre 1 e 10).
+- `flow_home`: URL base da conta no Flow (ex.: `https://flow.google.com/u/0/`, `/u/1/` ou `/u/2/`).
+- `account_email`: email da conta Google logada no Flow para validacao de seguranca.
 
-A selecao consome a cota ChatGPT/Codex, mesmo quando o Flow exibe zero creditos. A disponibilidade do modelo depende da conta e da versao do CLI. Vinte frames sao uma amostragem; escolher o melhor candidato nao garante ausencia de defeitos.
+---
 
-## Estado da verificacao
+## 3. Instrucoes de Operacao para o GPT / Agente
 
-O fluxo foi exercitado em um Mac com dez projetos, 40 cenas e dez finais verificados. Houve recuperacoes supervisionadas por alta demanda, carregamento de cards e acesso ao SSD. O pacote portatil tem testes locais e de instalacao isolada; a instalacao em outro Mac precisa do primeiro teste real. O adaptador depende da interface do Flow e pode precisar de ajuste quando ela mudar.
+### Iniciar um video individual
+```sh
+sh scripts/flow.sh start \
+  --image "/caminho/imagem_original.png" \
+  --outputs 1 \
+  --model lower \
+  --mode frames_continuous \
+  --output-root "/caminho/pasta_destino"
+```
+
+### Iniciar um lote de videos em paralelo
+```sh
+sh scripts/flow.sh start-batch \
+  --images "/caminho/img1.png" "/caminho/img2.png" "/caminho/img3.png" \
+  --outputs 1 \
+  --model lower \
+  --mode frames_continuous \
+  --output-root "/caminho/pasta_destino"
+```
+
+### Acompanhar o progresso
+```sh
+# Monitorar um lote de jobs ate conclusao
+sh scripts/flow.sh watch-batch "/pasta/job_1" "/pasta/job_2" --timeout 55
+
+# Ou consultar status rapido
+sh scripts/flow.sh status --folder "/pasta/job_1"
+```
+
+### Validar o video final
+```sh
+sh scripts/flow.sh verify "/pasta/job_1"
+```
+Retorna `{"ok": true, "metadata": {"duration": 32.02, "width": 720, "height": 1280, "fps": 24.0, "audio": true}}`.
+
+### Retomar um job pausado
+Se um trabalho pausar por oscilacao de rede ou fechamento acidental de aba:
+```sh
+sh scripts/flow.sh enqueue "/pasta/job_1"
+```
+
+---
+
+## 4. Regras e Contrato de Execucao
+
+1. **Janela Dedicada:** A extensao opera em uma janela propria do Chrome em segundo plano. Nao feche a janela da automacao enquanto houver jobs rodando.
+2. **Cenas Sequenciais:** Cada video tem 4 cenas de 8 segundos (ou 5 cenas no modo hook). A cena 1 usa a imagem inicial; as cenas 2, 3 e 4 usam o ultimo frame exato da cena anterior.
+3. **Custo Zero:** No modo `--model lower`, a automacao exige custo zero (0 creditos) na interface do Flow antes de autorizar o envio.
+4. **Idempotencia:** Nunca execute `start` novamente para uma pasta ja existente em andamento. Use `enqueue` para retomar trabalhos pausados.

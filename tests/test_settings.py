@@ -8,6 +8,22 @@ import settings
 
 
 class SettingsTests(unittest.TestCase):
+    def test_windows_profile_enables_harvest_without_copying_accounts_or_runtime(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'FLOW_APP_ROOT': temp}), patch.object(settings.sys, 'platform', 'win32'):
+            self.assertEqual(settings.read_settings(), {'recaptcha_harvest': True})
+            self.assertFalse(Path(temp, 'settings.json').exists())
+            Path(temp, 'settings.json').write_text(json.dumps({'flow_home':'https://flow.google.com/','max_parallel':5}))
+            result=settings.read_settings()
+            self.assertEqual(result['recaptcha_harvest'],True)
+            self.assertEqual(result['max_parallel'],5)
+            self.assertEqual(result['flow_home'],'https://flow.google.com/')
+            Path(temp, 'settings.json').write_text(json.dumps({'recaptcha_harvest':False}))
+            self.assertEqual(settings.read_settings(),{'recaptcha_harvest':False})
+
+    def test_windows_defaults_do_not_enable_an_unconfigured_mac(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'FLOW_APP_ROOT': temp}), patch.object(settings.sys, 'platform', 'darwin'):
+            self.assertEqual(settings.read_settings(),{})
+
     def test_home_is_local_and_environment_can_override(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'FLOW_APP_ROOT': temp}, clear=True):
             self.assertEqual(settings.flow_home(), 'https://flow.google.com/u/1/')

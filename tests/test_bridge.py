@@ -1,4 +1,5 @@
-import base64, json, os, struct, subprocess, sys, tempfile, unittest
+import base64, json, os, struct, subprocess, sys, tempfile, unittest, threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from PIL import Image
 from unittest.mock import patch
@@ -6,6 +7,83 @@ import bridge as b
 import flow_scene_builder as f
 
 class BridgeTests(unittest.TestCase):
+    def test_local_rendering_is_bounded_without_reducing_cloud_job_limit(self):
+        folders=[self.folder]+[f.prepare(self.root/'image.png',f'render{i}',downloads=self.root/'downloads',project='https://flow.google.com/u/1/project/test').resolve() for i in range(3)]
+        with b.queue_lock():b.atomic(b.QUEUE,[{'folder':str(folder),'state':'running'} for folder in folders])
+        gate=threading.Event();entered=threading.Event();lock=threading.Lock();active=0;peak=0;total=0
+        def render(folder):
+            nonlocal active,peak,total
+            with lock:
+                active+=1;total+=1;peak=max(peak,active)
+                if active==2:entered.set()
+            try:
+                if not gate.wait(5):raise TimeoutError('Test render gate')
+                return {'final':'test.mp4'}
+            finally:
+                with lock:active-=1
+        with patch.object(f,'render',side_effect=render),ThreadPoolExecutor(max_workers=4) as workers:
+            futures=[workers.submit(b.dispatch,{'op':'render','folder':str(folder)}) for folder in folders]
+            try:
+                self.assertTrue(entered.wait(2));self.assertEqual(peak,2);self.assertEqual(active,2)
+            finally:gate.set()
+            for future in futures:future.result(timeout=5)
+        self.assertEqual(total,4);self.assertEqual(peak,2)
+        self.assertTrue(all(row['state']=='complete' for row in b.queue()))
+        with patch.object(b,'read_settings',return_value={'max_parallel':30}):self.assertEqual(b.parallel_limit(),30)
+    def test_start_pins_single_generation_policy_and_reuses_it(self):
+        result=b.start(self.root/'image.png','single_generation',outputs=1,output_root=self.root/'single',prepare_only=True,audio_retry_limit=0)
+        folder,state=f.read_state(result['folder'])
+        self.assertEqual(state['audio_retry_limit'],0)
+        reused=b.start(self.root/'image.png','single_generation',outputs=1,output_root=self.root/'single',prepare_only=True,audio_retry_limit=0)
+        self.assertTrue(reused['reused']);self.assertEqual(reused['folder'],str(folder))
+    def test_configured_five_job_limit_and_invalid_values(self):
+        with patch.object(b,'read_settings',return_value={'max_parallel':5}):
+            self.assertEqual(b.parallel_limit(),5)
+            self.assertIsNone(b.dispatch({'op':'claim','exclude':['a','b','c','d','e']}))
+        for value in [0,31,True,'5']:
+            with patch.object(b,'read_settings',return_value={'max_parallel':value}):
+                with self.assertRaises(ValueError):b.parallel_limit()
+    def test_thirty_job_limit(self):
+        with patch.object(b,'read_settings',return_value={'max_parallel':30}):
+            self.assertEqual(b.parallel_limit(),30)
+            self.assertIsNone(b.dispatch({'op':'claim','exclude':[str(i) for i in range(30)]}))
+    def test_authorized_missing_submission_recovery_preserves_history_and_rejects_existing_results(self):
+        _,state=f.read_state(self.folder);state['account_email']='owner@example.com';f.write_state(self.folder,state)
+        b.authorize_retries(self.folder,'User authorized two additional attempts')
+        b.enqueue(self.folder);b.dispatch({'op':'claim'})
+        old='11111111-1111-4111-8111-111111111111'
+        obs={'email':'owner@example.com','home':state['project_creation']['home'],'model_key':'lower','credits':0,'outputs':1}
+        submitted={'op':'submitted','folder':str(self.folder),'scene':1,'baseline':[old],'failures':[],'observation':obs}
+        b.dispatch(submitted)
+        recovery={'op':'retry_missing','folder':str(self.folder),'scene':1,'evidence':{'pending':0,'errors':0,'asset_ids':[old]},'observation':obs}
+        for evidence in [{'pending':1},{'errors':1},{'asset_ids':[old,'22222222-2222-4222-8222-222222222222']}]:
+            with self.assertRaises(ValueError):b.dispatch({**recovery,'evidence':{**recovery['evidence'],**evidence}})
+        with self.assertRaises(ValueError):b.dispatch({**recovery,'observation':{**obs,'credits':5}})
+        with self.assertRaises(ValueError):b.dispatch({**recovery,'observation':{**obs,'email':'wrong@example.com'}})
+        for _ in range(2):
+            b.dispatch(recovery);b.dispatch(submitted)
+        with self.assertRaisesRegex(ValueError,'Limite'):b.dispatch(recovery)
+        scene=f.next_scene(self.folder)
+        self.assertEqual(scene['status'],'submitted')
+        self.assertEqual(len(scene['technical_retry_intents']),2)
+        self.assertTrue(all(x['previous_submission']['submission_receipt']['credits']==0 for x in scene['technical_retry_intents']))
+    def test_single_generation_job_blocks_audio_retry(self):
+        b.enqueue(self.folder);b.dispatch({'op':'claim'})
+        b.dispatch({'op':'submitted','folder':str(self.folder),'scene':1,'baseline':[],'failures':[]})
+        _,state=f.read_state(self.folder);state['audio_retry_limit']=0;f.write_state(self.folder,state)
+        with self.assertRaisesRegex(ValueError,'uma geracao'):
+            b.dispatch({'op':'retry_audio','folder':str(self.folder),'scene':1,'failure_key':'b'*64})
+        scene=f.next_scene(self.folder)
+        self.assertEqual(scene['status'],'submitted');self.assertEqual(scene.get('audio_retry_intents',[]),[])
+    def test_doctor_compares_live_package_instead_of_stale_handshake(self):
+        self.root.joinpath('app').mkdir(exist_ok=True)
+        self.root.joinpath('app/connection.json').write_text(json.dumps({'time':0,'build':'old','expected':'old','current':True}))
+        package=self.root/'package';package.mkdir()
+        (package/'build_id.json').write_text(json.dumps({'build':'new'}))
+        with patch.object(b,'__file__',str(self.root/'bridge.py')):
+            result=b.doctor()
+        self.assertFalse(result['extension_connection']['current'])
+        self.assertEqual(result['extension_connection']['expected'],'new')
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flow_bridge_test_');self.root=Path(self.temp.name)
         self.env=patch.dict(os.environ,{'FLOW_WORK_ROOT':str(self.root/'work'),'FLOW_APP_ROOT':str(self.root/'app')});self.env.start()
@@ -97,7 +175,8 @@ class BridgeTests(unittest.TestCase):
         creation=b.dispatch({'op':'project_intent',**args,'tab_id':123})
         self.assertRegex(creation['title'],r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$')
         with self.assertRaisesRegex(ValueError,'ja iniciada'):b.dispatch({'op':'project_intent',**args,'tab_id':123})
-        url='https://flow.google.com/u/1/project/11111111-1111-4111-8111-111111111111'
+        home=creation.get('home',f.flow_home())
+        url=f"{home}project/11111111-1111-4111-8111-111111111111"
         with self.assertRaises(ValueError):b.dispatch({'op':'project_bound',**args,'tab_id':999,'project':url})
         b.dispatch({'op':'project_bound',**args,'tab_id':123,'project':url})
         b.dispatch({'op':'project_ready',**args,'title':creation['title']})

@@ -67,4 +67,22 @@ class PipelineTests(unittest.TestCase):
     def test_separate_folders_and_preset(self):
         self.assertNotEqual(self.make(),self.make())
         with self.assertRaises(ValueError):f.validate_preset({'model':'lite','prompts':['a','b']})
+    def test_explicit_continuous_mode_and_final_only_editor_export(self):
+        folder=f.prepare(self.image,'continuous',downloads=self.root/'downloads',mode='frames_continuous',account_email='owner@example.com')
+        self.assertFalse((f.work_dir(folder)/'cena_02_inicio.png').exists())
+        for i,p in enumerate(self.clips,1):
+            self.assertTrue(f.next_scene(folder)['ready_to_submit']);f.mark_submitted(folder,i);f.ingest(folder,i,p,media_id=f'continuous_{i}')
+        _,state=f.read_state(folder)
+        for i in range(1,4):
+            self.assertEqual(state['scenes'][i]['predecessor']['sha256'],state['scenes'][i-1]['sha256'])
+            self.assertEqual(f.digest(state['scenes'][i]['start_image']),f.digest(state['scenes'][i-1]['last_frame']))
+        f.render(folder)
+        result=f.export_editor(folder,self.root/'editor')
+        self.assertEqual(result['editor_profile'],'conservative');self.assertTrue(result['review_required'])
+        self.assertEqual(len(list((self.root/'editor').iterdir())),1)
+        f.export_editor(folder,self.root/'editor')
+        Path(result['final']).write_text('changed')
+        with self.assertRaises(ValueError):f.export_editor(folder,self.root/'editor')
+        audio=self.root/'too_long.wav';f.run_ff(['-f','lavfi','-i','sine=duration=40',audio])
+        with self.assertRaisesRegex(ValueError,'maior'):f.export_editor(folder,self.root/'editor_other',audio)
 if __name__=='__main__':unittest.main()
