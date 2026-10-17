@@ -1,77 +1,36 @@
-# Flow Scene Builder: contrato para agentes
+# Flow Scene Builder
 
 ## Purpose
 
-Operar e manter o pipeline local de geracao de videos no Google Flow via extensao Chrome descompactada e bridge local Python/Native Messaging.
+Operate Google Flow through normal UI controls, retain continuous-scene inputs, download verified results and compose local MP4s. Heavy media and runtime state stay outside this repository.
 
 ## Ownership
 
-- Codigo em `<CODIGO_ROOT>/flow_scene_builder`.
-- Runtime e filas em `~/.local/share/flow_scene_builder` (macOS) ou `%LOCALAPPDATA%\flow_scene_builder` (Windows).
-- Extensao descompactada gerada em `package/`.
-- Presets em `presets/`.
+Source: this repository. Production executor: Chrome extension plus Python Native Messaging companion. The separate Playwright prototype belongs to `browser_executor/AGENTS.md`.
 
 ## Local Contracts
 
-1. **Criacao de Projetos:** Cada imagem inicial cria um projeto exclusivo no Flow pela URL base configurada (`flow_home`) e pelo botao Novo projeto. O titulo gerado tem formato `AAAA-MM-DD HH:MM:SS.mmm`.
-2. **Modelo e Custo:** Opera preferencialmente com Veo 3.1 Lite Lower Priority (`--model lower`), validando custo zero (0 creditos) na interface antes do envio.
-3. **Continuadade das Cenas:** O fluxo gera 4 cenas de 8 segundos (modo continuo): a primeira a partir da imagem original e as seguintes a partir do ultimo frame exato extraido da cena anterior via FFmpeg.
-4. **Serializacao de UI e Concorrencia:** Multiplos trabalhos (ate `max_parallel`, default 5 a 10) rodam em paralelo na mesma janela dedicada do Chrome. Transacoes de interface (cliques, selecao de asset, anexar frame) sao serializadas pelo `ui_queue.js` para evitar disputa de foco.
-5. **Colheita Transparente de Token:** A extensao intercepta o token de validacao gerado pelo compositor no envio e despacha a geracao de forma limpa, sem exigir acao manual do operador.
-6. **Entrega Final:** Apos a conclusao das 4 cenas, o bridge concatena os videos em um MP4 final de 32 segundos (720x1280, 24fps, audio), cujo nome e o titulo do projeto.
-7. **Idempotencia e Retomada:** Nunca execute `start` novamente em uma pasta que ja tenha execucao criada. Em caso de pausa por rede ou reinicio do Chrome, use `enqueue <pasta>` para retomar do ponto onde parou.
+- Preserve pending submissions, source identity, attempts, receipts and completed deliveries. Unknown outcomes require reconciliation before any retry.
+- Never ship credentials, signed media URLs, browser profiles, production manifests, account holds, gates, job state or personal machine settings.
+- Use only the normal service controls. No token capture/replay, fingerprint changes, challenge bypass or identity switching. Active challenges, login, quota or nonzero cost stop new submissions.
+- Serial production uses one authorized profile, one existing project, one dedicated window and one active video. Maintain at least 30 seconds between confirmed submissions, including retries.
+- x1, first result, zero visible cost, and no quality-driven regeneration. Technical/audio retry counts share their explicitly authorized per-scene limit.
+- Download programmatically and validate the asset UUID, file contents and SHA-256 before ingestion or delivery. Preserve the original verified frame at each recipe seam.
+- Never restart a live controller because an observation timer expired. Check its actual process handle; do not duplicate controllers.
 
 ## Work Guidance
 
-### Operacao Basica
-
-```sh
-# 1. Iniciar trabalho individual
-sh scripts/flow.sh start --image "/caminho/img.png" --outputs 1 --model lower --mode frames_continuous --output-root "/caminho/entregas"
-
-# 2. Iniciar lote concorrente
-sh scripts/flow.sh start-batch --images "/caminho/1.png" "/caminho/2.png" --outputs 1 --model lower --mode frames_continuous --output-root "/caminho/entregas"
-
-# 3. Acompanhar execucao
-sh scripts/flow.sh watch-batch "/pasta/job_1" "/pasta/job_2" --timeout 55
-
-# 4. Checar status da fila
-sh scripts/flow.sh status --folder "/pasta/job_1"
-
-# 5. Validar integridade do MP4 final
-sh scripts/flow.sh verify "/pasta/job_1"
-
-# 6. Retomar job pausado
-sh scripts/flow.sh enqueue "/pasta/job_1"
-```
-
-### Manutencao e Build da Extensao
-
-Sempre que editar arquivos em `extension/`, compile o pacote com:
-```sh
-node scripts/build.mjs
-```
-A extensao verifica a mudanca de build via `hello` ao bridge e recarrega automaticamente em segundo plano.
+- Read README configuration instructions before deploying this sanitized source snapshot. Example identity/project/volume literals are not live authorization.
+- `bridge.py`, `flow_scene_builder.py` and `candidate_selection.py` load their required sibling `* (1).py` implementation files. Keep them together. Drive-preserved test filenames are intentional too.
+- The serial controller uses the historical `producao_serial_2026_10_16` layout for compatibility. Do not migrate existing state opportunistically.
+- Recovery waits ten minutes only when a saved explicit policy permits it, then performs a normal UI/account/model/cost/inventory check. A wait alone does not release an active restriction. Reuse existing results; never clear uncertain sends.
+- Healthy model supervision may be spaced to about 30 minutes; native queue polling remains local. Report only material failures, required human action or verified completion unless asked for status.
+- Keep publication work in an isolated snapshot. Do not rebuild/reload the live extension, restart its host, stop production or copy runtime files for a source release.
 
 ## Verification
 
-```sh
-# Testes Python
-~/.local/share/flow_scene_builder/venv/bin/python -m unittest discover tests
-
-# Testes canonicos JavaScript
-export PATH="$HOME/.local/bin:$PATH" && node --test tests/flow_client.test.mjs tests/ui_queue.test.mjs tests/recaptcha_submission.test.mjs
-
-# Build da extensao e diagnostico de conexao
-node scripts/build.mjs
-sh scripts/flow.sh doctor
-```
+Use `python scripts/test_python.py` for all Python regressions in an isolated runtime, `npm test`, then `npm run build` and `npm run verify`. Validate the built package and a source archive. Before push, inspect tracked candidates for secrets, personal configuration, signed URLs, browser sessions and media. Check the remote commit after publication.
 
 ## Child DOX Index
 
-- `extension/`: Codigo-fonte da extensao Chrome (MV3, DOM, transporte, native runner).
-- `package/`: Extensao compilada pronta para carregar descompactada no Chrome.
-- `presets/`: Prompts de cenas e configuracoes de estilo.
-- `scripts/`: Scripts de instalacao, launcher (`flow.sh` / `flow.ps1`) e build.
-- `tests/`: Testes automatizados Python e JavaScript.
-- `docs/`: Documentacao operacional e de instalacao.
+- `browser_executor/AGENTS.md`: separate Playwright fixture/read-only prototype.

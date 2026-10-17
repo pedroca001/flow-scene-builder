@@ -6,7 +6,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ['README.md', 'AGENTS.md', '.gitignore', 'requirements.txt', 'package.json',
          'package-lock.json', 'pnpm-lock.yaml', 'extension_id.txt', 'bridge.py',
-         'flow_scene_builder.py', 'candidate_selection.py', 'settings.py',
+         'flow_scene_builder.py', 'candidate_selection.py', 'bridge (1).py',
+         'flow_scene_builder (1).py', 'candidate_selection (1).py', 'shared_runtime.py',
+         'pnpm-workspace.yaml', 'settings.py',
          'platform_lock.py', 'settings_windows_defaults.json']
 DIRECTORIES = ['extension', 'browser_executor', 'presets', 'scripts', 'tests', 'docs', '.agents/skills/gerar_video_flow']
 EXTENSIONS = {'.md', '.py', '.mjs', '.sh', '.ps1', '.json', '.js', '.css', '.html', '.yaml'}

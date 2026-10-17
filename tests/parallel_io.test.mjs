@@ -77,3 +77,12 @@ test('macOS path retains one whole UI transaction and its original upload method
   assert.ok(fixture.events.some(e=>e[0]==='legacy upload'));
   assert.ok(!fixture.events.some(e=>e[0]==='drop'));
 });
+
+test('serial async upload avoids duplicate configuration but retains final cost verification',async()=>{
+  const fixture=submissionFixture();fixture.job.max_parallel=1;
+  fixture.flow.verify=async()=>{fixture.events.push(['verify final cost']);throw Error('Cost changed');};
+  await assert.rejects(submitScene({...fixture,withUi:fn=>fn(),parallelIo:true}),/Cost changed/);
+  assert.equal(fixture.events.filter(e=>e[0]==='configure').length,1);
+  assert.equal(fixture.events.filter(e=>e[0]==='verify final cost').length,1);
+  assert.ok(!fixture.events.some(e=>['submitted','click'].includes(e[0])));
+});

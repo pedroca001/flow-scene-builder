@@ -49,3 +49,31 @@ test('retiring completed projects keeps one window anchor and never closes chang
   assert.ok(f.tabs.has(changed.id));assert.ok(f.tabs.has(b.id));
   assert.equal(f.calls.filter(c=>c[0]==='window').length,1);
 });
+
+test('serial jobs reuse the loaded project anchor without a new tab or navigation',async()=>{
+  const f=fixture(),owner=automationTabs(f.api),url='https://flow.google.com/u/2/project/serial';
+  const first=await owner.open(url);first.url=url+'/edit/asset';
+  assert.equal((await owner.open(url,{reuseProject:true})).id,first.id);
+  assert.equal(f.calls.filter(c=>c[0]==='tab').length,0);
+  assert.equal(f.calls.filter(c=>c[0]==='window').length,1);
+  assert.notEqual((await owner.open(url)).id,first.id);
+});
+
+test('reuse never selects a personal tab, a prefix collision, or an ambiguous project',async()=>{
+  const f=fixture(),owner=automationTabs(f.api),url='https://flow.google.com/u/2/project/serial';
+  const anchor=await owner.open(url+'-other');
+  const personal=await f.api.windows.create({url});
+  const next=await owner.open(url,{reuseProject:true});
+  assert.notEqual(next.id,anchor.id);assert.notEqual(next.id,personal.tabs[0].id);
+  await owner.open(url);
+  const created=await owner.open(url,{reuseProject:true});
+  assert.notEqual(created.id,next.id);
+});
+
+test('serial project anchor is retained even when another tab exists in the owned window',async()=>{
+  const f=fixture(),owner=automationTabs(f.api),url='https://flow.google.com/u/2/project/serial';
+  const tab=await owner.open(url);await owner.open('https://example.com/another');
+  assert.equal(await owner.retire(tab.id,url,{keepProjectAnchor:true}),false);
+  assert.equal((await owner.open(url,{reuseProject:true})).id,tab.id);
+  assert.equal(f.calls.filter(c=>c[0]==='remove').length,0);
+});

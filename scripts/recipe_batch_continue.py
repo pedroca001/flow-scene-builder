@@ -47,7 +47,7 @@ def step(manifest_path, destination, admit=True):
     if not admit:
         return summary
     # Any quota hold blocks admission of the next wave. Pauses remain untouched.
-    account = 'bassi.volkov@gmail.com'
+    account = 'operator@example.invalid'
     holds = bridge.APP / 'account_holds.json'
     if holds.exists() and json.loads(holds.read_text()).get(account):
         summary['blocked'] = 'account_hold'

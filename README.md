@@ -1,112 +1,74 @@
 # Flow Scene Builder
 
-Automacao local para macOS e Windows que gera videos de quatro cenas continuas (ou mais cenas/hooks) no Google Flow. Uma extensao Chrome opera a interface de forma controlada enquanto o bridge Python e o FFmpeg gerenciam a fila, baixam os candidatos, extraem os frames de emenda e montam o MP4 final de 32 segundos.
+Chrome Manifest V3 extension plus a local Python/FFmpeg companion for Google Flow. This snapshot preserves the serial production pipeline: one hook (8 seconds), four continuous recipe scenes (8 seconds each), and one verified portrait MP4 per image pair.
 
-O sistema opera preferencialmente com o modelo **Veo 3.1 Lite Lower Priority** (custo zero no plano Ultra).
+## Production behavior
 
----
+- One existing Flow project, one dedicated Chrome window, one active video at a time.
+- Veo 3.1 Lite Lower Priority, x1, zero visible credit cost. Verify the available model and cost in the current session.
+- At least 30 seconds between confirmed submissions, including authorized retries.
+- The last verified frame of each recipe scene becomes the next scene's input.
+- Programmatic downloads use the normal export control, without a Save As dialog. Each scene has an asset UUID and SHA-256 receipt.
+- Persistent queue, single-controller lock, source hashes, bounded retries and recovery of the same video. Completed files are reconciled before reuse.
+- Ten-minute recovery is allowed only by an explicit saved policy, followed by a fresh normal UI check. Active challenges, login, quota, identity mismatch or nonzero cost stop submissions. Unknown submission outcomes require reconciliation.
+- Local polling runs independently of an LLM; supervision can be spaced to roughly 30 minutes during healthy operation.
 
-## 1. Instalacao e Requisitos
+## Requirements
 
-### Requisitos
-- Google Chrome aberto com a conta Google logada no Flow (`https://flow.google.com/`).
-- Python 3.10+ (recomendado 3.12).
-- FFmpeg (instalado no sistema ou via `imageio_ffmpeg`).
-- Node.js 22+.
+Chrome 120+, Node.js 22+, Python 3.10+ (3.12 recommended), and FFmpeg (`imageio-ffmpeg` is included in Python requirements). Use an authenticated normal Flow session. No Google credentials or browser profiles are distributed.
 
-### No macOS
+## Install
+
+On macOS, confirm the real Flow account home in Chrome, then:
+
 ```sh
-# 1. Instalar runtime e registrar host nativo
-sh scripts/install_macos.sh --flow-home https://flow.google.com/u/1/
-
-# 2. Carregar extensao no Chrome
-# Abra chrome://extensions, ative "Modo do desenvolvedor" e clique em "Carregar sem compactacao",
-# selecionando a pasta package/ deste repositorio.
-
-# 3. Validar conexao
-sh scripts/flow.sh doctor
+sh scripts/install_macos.sh --flow-home https://flow.google.com/u/0/
 ```
 
-### No Windows (PowerShell)
-```powershell
-# 1. Instalar runtime e registrar host nativo
-& .\scripts\install_windows.ps1 -FlowHome https://flow.google.com/u/1/
+Load the generated `package/` directory in `chrome://extensions` using developer mode. Run `sh scripts/flow.sh doctor` to inspect the connection. See [macOS installation](docs/INSTALACAO_MACOS.md) and [Windows installation](docs/INSTALACAO_WINDOWS.md). Do not reinstall, rebuild or reload an extension while a job has an uncertain submission.
 
-# 2. Carregar extensao no Chrome
-# Em chrome://extensions, carregar a pasta package/ descompactada.
+## Configure this source snapshot
 
-# 3. Validar conexao
-.\scripts\flow.ps1 doctor
-```
+Production configuration and private job state are deliberately excluded. These example values must be replaced locally before a real batch:
 
----
+1. In `extension/production_routes.js`, replace the all-zero project UUID and account-home index with the exact existing project URL from the authorized Chrome session. Keep one route for serial production. Rebuild after configuration.
+2. The historical serial controller `scripts/run_serial_300_flow.py` expects 300 pairs in `<BATCH>/aprovadas/`, named `NNN_PPP_hook_description.png` and `NNN_PPP_recipe_description.png`. `PPP` is the shared three-digit pair ID. It stores its manifest in `<BATCH>/relatorios/flow/producao_serial_2026_10_16/` and jobs outside the repository. Those date-based paths are retained for compatibility with the production version.
+3. Replace `operator@example.invalid` and the Flow account-home index in that controller's initial-manifest defaults. Existing manifests are authoritative and must contain the authorized email, exact home, and `shared_project`. The controller refuses to invent a project when none has been configured.
+4. Replace `/Volumes/EXTERNAL_DRIVE` with the real mounted external volume in the controller and `bridge (1).py`. This preserves the production mount/download-root checks. Do not point it at an unmounted placeholder directory.
+5. Set `max_parallel` to `1` in the machine-local runtime settings. If using legacy batch tools, configure the same example account and volume literals there too. They are separate workflows, not the serial production entry point.
+6. For ten-minute recovery, record the explicit operator authorization under `recovery_policy` in the batch manifest (`delay_seconds: 600`, nonempty `authorization`). The controller copies that policy into newly created jobs. Do not erase historical receipts, holds, attempts or uncertain sends to enable recovery.
 
-## 2. Configuracao (`settings.json`)
+Initialize/review the manifest and its single existing project before invoking the controller. `ensure_contract` in the serial controller prepares prompts and a manifest offline; it does not send a generation. Source pairs must be complete and their identities preserved.
 
-As configuracoes ficam salvas no runtime local em `~/.local/share/flow_scene_builder/settings.json` (ou `%LOCALAPPDATA%\flow_scene_builder\settings.json` no Windows):
+Start only one controller:
 
-```json
-{
-  "max_parallel": 5,
-  "flow_home": "https://flow.google.com/u/1/",
-  "account_email": "seu_email@gmail.com"
-}
-```
-
-- `max_parallel`: numero de geracoes concorrentes simultaneas (recomendado entre 1 e 10).
-- `flow_home`: URL base da conta no Flow (ex.: `https://flow.google.com/u/0/`, `/u/1/` ou `/u/2/`).
-- `account_email`: email da conta Google logada no Flow para validacao de seguranca.
-
----
-
-## 3. Instrucoes de Operacao para o GPT / Agente
-
-### Iniciar um video individual
 ```sh
-sh scripts/flow.sh start \
-  --image "/caminho/imagem_original.png" \
-  --outputs 1 \
-  --model lower \
-  --mode frames_continuous \
-  --output-root "/caminho/pasta_destino"
+python scripts/run_serial_300_flow.py --root /path/to/batch --output /path/to/final_videos
 ```
 
-### Iniciar um lote de videos em paralelo
+Use the installed companion virtualenv's Python. The controller's file lock rejects another instance. Keep the extension's permitted session open; do not run the retired dual-profile supervisor for a serial batch.
+
+## Verification
+
+Run in an isolated checkout/runtime, not against a production queue:
+
 ```sh
-sh scripts/flow.sh start-batch \
-  --images "/caminho/img1.png" "/caminho/img2.png" "/caminho/img3.png" \
-  --outputs 1 \
-  --model lower \
-  --mode frames_continuous \
-  --output-root "/caminho/pasta_destino"
+npm ci
+npm test
+npm run build
+npm run verify
+python scripts/test_python.py
 ```
 
-### Acompanhar o progresso
-```sh
-# Monitorar um lote de jobs ate conclusao
-sh scripts/flow.sh watch-batch "/pasta/job_1" "/pasta/job_2" --timeout 55
+The Python runner always creates an isolated runtime and includes the intentional `(1).py` test files that ordinary unittest discovery skips. Build output, dependencies, media, manifests, receipts, browser sessions and machine-local settings are ignored.
 
-# Ou consultar status rapido
-sh scripts/flow.sh status --folder "/pasta/job_1"
-```
+## Source layout and publication
 
-### Validar o video final
-```sh
-sh scripts/flow.sh verify "/pasta/job_1"
-```
-Retorna `{"ok": true, "metadata": {"duration": 32.02, "width": 720, "height": 1280, "fps": 24.0, "audio": true}}`.
+- `extension/`: production UI executor, download/export, frame transfer, inventory cache and cooldown checks.
+- `bridge.py`, `flow_scene_builder.py`, `candidate_selection.py`: compatibility entry points. Their sibling `* (1).py` implementation files are intentional and required. Do not omit or rename them.
+- `scripts/run_serial_300_flow.py`: serial paired-batch controller; `scripts/compose_hook_recipe.py`: final composition.
+- `tests/`: offline regression tests, including the intentional Drive-preserved `(1)` filenames.
+- `browser_executor/`: separate read-only/fixture Playwright prototype; it is not the production executor.
+- `docs/PUBLICACAO.md`: exact snapshot exclusions and configuration boundary.
 
-### Retomar um job pausado
-Se um trabalho pausar por oscilacao de rede ou fechamento acidental de aba:
-```sh
-sh scripts/flow.sh enqueue "/pasta/job_1"
-```
-
----
-
-## 4. Regras e Contrato de Execucao
-
-1. **Janela Dedicada:** A extensao opera em uma janela propria do Chrome em segundo plano. Nao feche a janela da automacao enquanto houver jobs rodando.
-2. **Cenas Sequenciais:** Cada video tem 4 cenas de 8 segundos (ou 5 cenas no modo hook). A cena 1 usa a imagem inicial; as cenas 2, 3 e 4 usam o ultimo frame exato da cena anterior.
-3. **Custo Zero:** No modo `--model lower`, a automacao exige custo zero (0 creditos) na interface do Flow antes de autorizar o envio.
-4. **Idempotencia:** Nunca execute `start` novamente para uma pasta ja existente em andamento. Use `enqueue` para retomar trabalhos pausados.
+This is a source publication of a running installation, with local identity/location literals replaced by examples. It does not claim that a fresh installation is already authenticated or configured. No production process is modified by publishing the source.

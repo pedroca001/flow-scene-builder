@@ -205,7 +205,7 @@ def main():
             if signature != last:
                 print(json.dumps(result,ensure_ascii=False),flush=True)
                 last = signature
-            if not a.watch or result['edited'] == target:
+            if not a.watch or result['edited'] == target or result.get('pairs_ready') == target:
                 return
             time.sleep(2)
 

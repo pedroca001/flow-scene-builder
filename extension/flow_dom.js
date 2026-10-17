@@ -9,6 +9,14 @@ export async function flowDom(op, a) {
     const label=e=>{const explicit=e.getAttribute('aria-label')||e.querySelector('.toggle-text,.label')?.textContent;if(explicit)return canonical(explicit);const copy=e.cloneNode(true);copy.querySelectorAll('mat-icon,svg,[aria-hidden="true"]').forEach(n=>n.remove());return canonical(copy.textContent);};
     const buttons=()=>all('button,[role="button"],[role="menuitem"],[role="radio"]').filter(visible);
     const find=(names)=>{const candidates=buttons();for(const name of names){const found=candidates.find(e=>label(e)===name);if(found)return found;}};
+    const projectScrollers=()=>{
+      const page=document.querySelector('flow-project-page');
+      if(!page||/\/edit\//.test(location.pathname))return [];
+      const ancestors=[];for(let node=page;node;node=node.parentElement)ancestors.push(node);
+      const nodes=new Set([document.scrollingElement,...ancestors,...page.querySelectorAll('*')]);
+      return [...nodes].filter(node=>node&&node.scrollTop>0&&node.clientHeight>=100&&
+        (node===document.scrollingElement||/auto|scroll/.test(getComputedStyle(node).overflowY)));
+    };
     const point=e=>{if(!e)throw Error('Controle do Flow nao encontrado.');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,disabled:e.disabled||e.getAttribute('aria-disabled')==='true'};};
     const tileList=()=>all('flow-media-tile,[aria-label]').filter(e=>visible(e) && e.querySelector('video[aria-label="Generated video"]'));
     const settings=()=>{
@@ -28,6 +36,10 @@ export async function flowDom(op, a) {
       const account=buttons().find(e=>/^(Google Account:|Conta do Google:)/i.test(e.getAttribute('aria-label')||''));
       const email=(account?.getAttribute('aria-label')||'').match(/\(([^()\s]+@[^()\s]+)\)/)?.[1]||null;
       return {email,home:location.origin+(location.pathname.match(/^\/u\/\d+\//)?.[0]||'/')};
+    }
+    if(op==='projectReady'){
+      const account=buttons().find(e=>/^(Google Account:|Conta do Google:)/i.test(e.getAttribute('aria-label')||''));
+      return {ready:/\/project\//.test(location.pathname)&&!!account&&!!find(['Settings trigger','Configurações'])};
     }
     if(op==='point')return point(a.css?all(a.css).find(visible):find(a.names));
     if(op==='inputVisibility')return {visible:document.visibilityState==='visible',focused:document.hasFocus()};
@@ -52,17 +64,27 @@ export async function flowDom(op, a) {
       ));
       if(preview&&(!preview.complete||!preview.naturalWidth))return false;
       const confirm=[...overlay.querySelectorAll('button')].find(e=>['Add to prompt','Adicionar ao prompt','Incluir no comando','Adicionar ao comando'].includes(label(e)));
+      if(a.probeOnly)return !!confirm&&!confirm.disabled&&confirm.getAttribute('aria-disabled')!=='true';
       if(confirm&&!confirm.disabled&&confirm.getAttribute('aria-disabled')!=='true'&&!confirm.dataset.fsbConfirmed){confirm.dataset.fsbConfirmed='true';confirm.click();}
       return false;
     }
     if(op==='generationState')return {pending:all('flow-pending-tile').filter(visible).length,videos:all('flow-video-tile').filter(e=>visible(e)&&!e.querySelector('flow-error-tile,flow-pending-tile')).length,errors:all('flow-error-tile').filter(visible).length};
     if(op==='pendingComplete')return all('flow-pending-tile').filter(visible).some(tile=>/\b100\s*%/.test(tile.innerText));
     if(op==='settings')return settings();
+    if(op==='gridState'){
+      const item=all('mat-list-item,[mat-list-item]').find(e=>visible(e)&&['All media','Todas as midias','Todas as mídias'].includes(label(e)));
+      return {needsRestore:projectScrollers().length>0||!!item&&!item.classList.contains('mdc-list-item--activated')};
+    }
     if(op==='allMedia'){
       const item=all('mat-list-item,[mat-list-item]').find(e=>visible(e)&&['All media','Todas as midias','Todas as mídias'].includes(label(e)));
       if(!item)throw Error('Filtro All media nao encontrado.');
-      if(item.classList.contains('mdc-list-item--activated'))return true;
-      item.click();return false;
+      if(!item.classList.contains('mdc-list-item--activated')){item.click();return false;}
+      // Flow virtualizes the grid and can hide its header after scrolling.
+      // Return to newest media before looking for a submitted result. Never
+      // scroll an editor or frame-selection overlay as a substitute.
+      const scrollers=projectScrollers();
+      if(scrollers.length){for(const node of scrollers)node.scrollTop=0;return false;}
+      return true;
     }
     if(op==='audioFailures'||op==='retryAudio'){
       const failures=await Promise.all(all('flow-error-tile').filter(visible).map(async tile=>{
@@ -70,7 +92,9 @@ export async function flowDom(op, a) {
         const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(title+'\n'+text));
         const key=Array.from(new Uint8Array(hash),n=>n.toString(16).padStart(2,'0')).join('');
         const retry=[...tile.querySelectorAll('button')].find(b=>['Retry','Tentar de novo','Tentar novamente'].includes(label(b)));
-        const kind=/unusual activity|atividade incomum|quota|hit your limits|insufficient credits|not enough credits|créditos? insuficientes|limite.*gera|too many|muitas solicita|rate limit/i.test(text)?'account_limit':null;
+        // The provider's browser-extension advice does not cancel its explicit
+        // unusual-activity restriction. Freeze every profile on that account.
+        const kind=/unusual activity|atividade incomum|automation detected|detected automation|automa[çc][ãa]o detectada|quota|hit your limits|insufficient credits|not enough credits|créditos? insuficientes|limite.*gera|too many|muitas solicita|rate limit/i.test(text)?'account_limit':null;
         return {key,tile,retry,kind,reason:text,retriable:!kind&&/not been charged|não houve cobrança|nao houve cobranca|não foi cobrado/i.test(text)&&!!retry};
       }));
       if(op==='audioFailures')return failures.map(({key,retriable,kind,reason})=>({key,retriable,kind,reason}));
@@ -105,26 +129,58 @@ export async function flowDom(op, a) {
       const container=tile.closest('flow-grid-tile-container')||tile;
       const media=tile.querySelector('video[aria-label="Generated video"],video[aria-label="Vídeo gerado"],img[alt="Generated video thumbnail"],img[alt="Miniatura do vídeo gerada"]');
       const src=media?.currentSrc||media?.src;
+      if(!src)return null;
+      const u=new URL(src);const source=u.origin+u.pathname;
       let key=container.getAttribute('data-fsb-key');
-      if(!key && !src)return null;
-      if(!key){const u=new URL(src);const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(u.origin+u.pathname));key=Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('');container.setAttribute('data-fsb-key',key);}
+      // Angular may reuse a tile node for another asset. Never retain its old
+      // identity when the media itself changes; signed query renewal is fine.
+      if(!key||container.getAttribute('data-fsb-source')!==source){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(source));key=Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('');container.setAttribute('data-fsb-key',key);container.setAttribute('data-fsb-source',source);}
       return {key,tile};
     }))).filter(Boolean);
     if(op==='cards')return (await cards()).map(({key})=>({key}));
     if(op==='cardPoint')return point((await cards()).find(c=>c.key===a.key)?.tile);
     if(op==='openCard'){const c=(await cards()).find(c=>c.key===a.key);if(!c)throw Error('Cartao nao encontrado.');c.tile.click();return true;}
     if(op==='assetId')return location.pathname.match(/\/edit\/([a-f0-9-]{36})$/i)?.[1]||null;
+    if(op==='downloadSource'){
+      const assetId=location.pathname.match(/\/edit\/([a-f0-9-]{36})$/i)?.[1];
+      if(assetId!==a.assetId)throw Error('Asset mudou antes do download programatico.');
+      const videos=all('video').filter(e=>visible(e)&&!e.closest('flow-video-tile,flow-grid-tile-container')&&e.getBoundingClientRect().width>100&&e.getBoundingClientRect().height>100);
+      const urls=[...new Set(videos.map(e=>e.currentSrc||e.src).filter(Boolean))];
+      if(urls.length>1)throw Error('Mais de uma fonte de video no editor; nao escolher por ordem.');
+      return urls.length===1?{assetId,url:urls[0]}:null;
+    }
     if(op==='armDownload'){
-      const state={url:null};const original=HTMLAnchorElement.prototype.click;let timer;
-      const restore=()=>{clearTimeout(timer);HTMLAnchorElement.prototype.click=original;document.removeEventListener('click',capture,true);};
+      document.fsbDownload?.restore?.();
+      const state={url:null};const original=HTMLAnchorElement.prototype.click;const picker=window.showSaveFilePicker;let timer;
+      const restore=()=>{clearTimeout(timer);HTMLAnchorElement.prototype.click=original;window.showSaveFilePicker=picker;document.removeEventListener('click',capture,true);};
+      // Modern Flow can write an export through File System Access instead
+      // of clicking an anchor. Collect that normal export in memory so its
+      // picker never appears; the native job writes and verifies the bytes.
+      window.showSaveFilePicker=async()=>({kind:'file',name:'flow_export.mp4',createWritable:async()=>{
+        const records=[];let position=0,size=0;
+        const write=async value=>{
+          if(value&&typeof value==='object'&&value.type==='seek'){position=value.position;return;}
+          if(value&&typeof value==='object'&&value.type==='truncate'){size=value.size;return;}
+          if(value&&typeof value==='object'&&value.type==='write'){if(value.position!==undefined)position=value.position;value=value.data;}
+          const bytes=value instanceof Blob?new Uint8Array(await value.arrayBuffer()):value instanceof ArrayBuffer?new Uint8Array(value):ArrayBuffer.isView(value)?new Uint8Array(value.buffer,value.byteOffset,value.byteLength):new TextEncoder().encode(String(value));
+          records.push({position,bytes});position+=bytes.length;size=Math.max(size,position);
+        };
+        let resolve;state.promise=new Promise(r=>{resolve=r;});
+        const stream=new WritableStream({write,close:()=>{
+          state.bytes=new Uint8Array(size);
+          for(const r of records)if(r.position<size)state.bytes.set(r.bytes.subarray(0,size-r.position),r.position);
+          state.url='captured:file-system-export';state.channel='file_system_export';resolve();restore();
+        },abort:error=>{state.error=String(error);resolve();restore();}});
+        stream.write=write;stream.seek=async p=>{position=p;};stream.truncate=async s=>{size=s;};return stream;
+      }});
       const take=anchor=>{if(anchor?.hasAttribute('download')){
         state.url=anchor.href;
         state.promise=fetch(anchor.href,{signal:AbortSignal.timeout(45000)}).then(r=>{if(!r.ok)throw Error(`HTTP ${r.status}`);return r.arrayBuffer();}).then(buffer=>{state.bytes=new Uint8Array(buffer);}).catch(e=>{state.error=`Arquivo original (${new URL(state.url).protocol}): ${e.message}`;});
         restore();return true;}return false;};
       const capture=event=>{if(take(event.target.closest?.('a'))){event.preventDefault();event.stopImmediatePropagation();}};
       HTMLAnchorElement.prototype.click=function(){if(!take(this))return original.call(this);};
-      document.addEventListener('click',capture,true);document.fsbDownload=state;
-      timer=setTimeout(restore,30000);return true;
+      document.addEventListener('click',capture,true);state.restore=restore;document.fsbDownload=state;
+      timer=setTimeout(restore,120000);return true;
     }
     if(op==='downloadLink')return document.fsbDownload?.url||null;
     if(op==='originalChunk'){
@@ -136,7 +192,7 @@ export async function flowDom(op, a) {
       for(let i=0;i<chunk.length;i+=8192)text+=String.fromCharCode(...chunk.subarray(i,i+8192));
       return {data:btoa(text),size:bytes.length,offset};
     }
-    if(op==='releaseDownload'){delete document.fsbDownload;return true;}
+    if(op==='releaseDownload'){document.fsbDownload?.restore?.();delete document.fsbDownload;return true;}
     if(op==='media'){
       await cards();
       return all('video[aria-label="Generated video"]').map(e=>{
@@ -146,6 +202,8 @@ export async function flowDom(op, a) {
       }).filter(v=>v?.key);
     }
     if(op==='blockers') {
+      const challenge=all('iframe').find(e=>visible(e)&&/recaptcha/i.test(e.src||'')&&/bframe|challenge/i.test((e.src||'')+' '+(e.title||''))&&e.getBoundingClientRect().width>100&&e.getBoundingClientRect().height>100);
+      if(challenge)return 'Verificacao humana ativa (reCAPTCHA).';
       // Historical error cards remain in the project grid for audit; they are
       // not active account or UI blockers for the next scene.
       const alerts=all('[role="alert"],mat-snack-bar-container,.error-message').filter(e=>visible(e)&&!e.closest('flow-error-tile')).map(e=>clean(e.innerText));
@@ -178,8 +236,9 @@ export async function flowDom(op, a) {
     }
     if(op==='frameState') {
       const start=find(['Start','Início','Inicio']);
-      const chip=find(['Image ingredient','Elemento de imagem','Elemento'])||all('flow-image-chip,flow-image-ingredient-chip').find(visible);
-      return {empty:!!start,hasImage:!!chip,images:all('img').filter(visible).map(e=>({alt:e.alt,src:e.src})).filter(e=>/blob:|flow-content/.test(e.src)).length};
+      const chips=all('flow-image-chip,flow-image-ingredient-chip').filter(visible);
+      const chip=find(['Image ingredient','Elemento de imagem','Elemento'])||chips[0];
+      return {empty:!!start,hasImage:!!chip,chipCount:chips.length,images:all('img').filter(visible).map(e=>({alt:e.alt,src:e.src})).filter(e=>/blob:|flow-content/.test(e.src)).length};
     }
     if(op==='frameMatches') {
       const chips=all('flow-image-ingredient-chip img,flow-image-chip img').filter(visible);
@@ -187,8 +246,36 @@ export async function flowDom(op, a) {
       if(chips.length!==1||assets.length!==1||find(['Start','Início','Inicio']))return false;
       const source=assets[0].querySelector('img');
       if(!source?.complete||!source.naturalWidth||!chips[0].complete||!chips[0].naturalWidth)return false;
+      const id=e=>e.getAttribute('data-media-id')||(e.currentSrc||e.src||'').match(/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}/i)?.[0];
+      const sourceId=id(source),chipId=id(chips[0]);
+      if(sourceId&&chipId)return sourceId===chipId;
       const key=e=>{try{const u=new URL(e.src);return u.origin+u.pathname;}catch{return null;}};
       return !!key(source)&&key(source)===key(chips[0]);
+    }
+    if(op==='frameNamedReady') {
+      const chips=all('flow-image-ingredient-chip img,flow-image-chip img').filter(visible);
+      const assets=all('flow-grid-tile-container[aria-label]').filter(e=>visible(e)&&e.getAttribute('aria-label')===a.name);
+      return chips.length===1&&assets.length===1&&!find(['Start','Início','Inicio'])&&
+        !!chips[0].complete&&!!chips[0].naturalWidth&&!!assets[0].querySelector('img')?.complete&&!!assets[0].querySelector('img')?.naturalWidth;
+    }
+    if(op==='frameAssetId'){
+      const chips=all('flow-image-ingredient-chip img,flow-image-chip img').filter(visible);
+      for(const chip of chips){
+        const src=chip.currentSrc||chip.src||'';
+        const m=src.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+        if(m)return m[0];
+      }
+      return null;
+    }
+    if(op==='imageAssetIdByName'){
+      const assets=all('flow-grid-tile-container[aria-label]').filter(e=>visible(e)&&(!a.name||e.getAttribute('aria-label')===a.name));
+      for(const asset of assets){
+        const img=asset.querySelector('img');
+        const src=img?.getAttribute('data-media-id')||img?.currentSrc||img?.src||'';
+        const m=src.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+        if(m)return m[0];
+      }
+      return null;
     }
     if(op==='openNamedImagePreview'){
       // Read-only image navigation only. Never used for Generate or Retry.

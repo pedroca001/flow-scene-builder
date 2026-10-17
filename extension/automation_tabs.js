@@ -8,18 +8,26 @@ export function automationTabs(api){
   }
   async function remember(win){await api.storage.local.set({[key]:win.id});return win;}
   return {
-    retire:(tabId,project)=>serial(async()=>{
+    retire:(tabId,project,{keepProjectAnchor=false}={})=>serial(async()=>{
       const win=await savedWindow();
       const tab=await api.tabs.get(tabId).catch(()=>null);
       if(!win||!tab||tab.windowId!==win.id||!(tab.url===project||tab.url.startsWith(project+'/')))return false;
+      if(keepProjectAnchor)return false;
       const current=await api.windows.get(win.id,{populate:true});
       // Keep the last tab as the anchor so the next wave reuses this same window.
       if(current.tabs.length<=1)return false;
       await api.tabs.remove(tabId);return true;
     }),
-    open:url=>serial(async()=>{
+    open:(url,{reuseProject=false}={})=>serial(async()=>{
       const win=await savedWindow();
-      if(win)return api.tabs.create({windowId:win.id,url,active:false});
+      if(win){
+        if(reuseProject){
+          const current=await api.windows.get(win.id,{populate:true});
+          const matching=current.tabs.filter(tab=>tab.url===url||tab.url?.startsWith(url+'/'));
+          if(matching.length===1)return matching[0];
+        }
+        return api.tabs.create({windowId:win.id,url,active:false});
+      }
       const created=await remember(await api.windows.create({url,type:'normal',focused:false,width:1100,height:900}));
       return created.tabs[0];
     }),

@@ -56,7 +56,7 @@ class BridgeTests(unittest.TestCase):
         submitted={'op':'submitted','folder':str(self.folder),'scene':1,'baseline':[old],'failures':[],'observation':obs}
         b.dispatch(submitted)
         recovery={'op':'retry_missing','folder':str(self.folder),'scene':1,'evidence':{'pending':0,'errors':0,'asset_ids':[old]},'observation':obs}
-        for evidence in [{'pending':1},{'errors':1},{'asset_ids':[old,'22222222-2222-4222-8222-222222222222']}]:
+        for evidence in [{'pending':1},{'errors':-1},{'errors':None},{'asset_ids':[old,'22222222-2222-4222-8222-222222222222']}]:
             with self.assertRaises(ValueError):b.dispatch({**recovery,'evidence':{**recovery['evidence'],**evidence}})
         with self.assertRaises(ValueError):b.dispatch({**recovery,'observation':{**obs,'credits':5}})
         with self.assertRaises(ValueError):b.dispatch({**recovery,'observation':{**obs,'email':'wrong@example.com'}})
@@ -186,8 +186,7 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(reused['reused']);self.assertEqual(reused['folder'],str(folder.resolve()))
 
     def test_new_project_stays_on_configured_google_account(self):
-        with patch.object(f,'DEFAULT_HOME','https://flow.google.com/u/0/'):
-            folder=f.prepare(self.root/'image.png','account_zero',downloads=self.root/'out')
+        folder=f.prepare(self.root/'image.png','account_zero',downloads=self.root/'out',home='https://flow.google.com/u/0/')
         b.enqueue(folder);b.dispatch({'op':'claim'})
         args={'folder':str(folder),'tab_id':42}
         b.dispatch({'op':'project_intent',**args})

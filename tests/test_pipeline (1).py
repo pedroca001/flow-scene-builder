@@ -58,12 +58,13 @@ class PipelineTests(unittest.TestCase):
         for i,p in enumerate(self.clips,1):
             f.mark_submitted(folder,i,[f'previous_{i}']);f.ingest(folder,i,p,media_id=f'titled_{i}')
         result=f.render(folder)
-        self.assertEqual(Path(result['final']).name,title+'.mp4')
-        self.assertTrue((folder/(title+'.mp4')).is_file())
+        expected_name=(title.replace(':','-') if os.name=='nt' else title)+'.mp4'
+        self.assertEqual(Path(result['final']).name,expected_name)
+        self.assertTrue((folder/expected_name).is_file())
     def test_signed_urls_never_persist(self):
         folder=self.make()
         with self.assertRaises(ValueError):f.mark_submitted(folder,1,['https://example.com/video?Signature=secret'])
-        self.assertNotIn('Signature',(f.work_dir(folder)/'execucao.json').read_text())
+        self.assertNotIn('Signature',(f.work_dir(folder)/'execucao.json').read_text(encoding='utf-8'))
     def test_separate_folders_and_preset(self):
         self.assertNotEqual(self.make(),self.make())
         with self.assertRaises(ValueError):f.validate_preset({'model':'lite','prompts':['a','b']})

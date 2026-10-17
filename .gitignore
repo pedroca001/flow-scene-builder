@@ -27,3 +27,22 @@ execucao.json
 native_host
 jobs/
 * (*).*
+
+# Drive-preserved implementation and regression tests required by wrappers.
+!/bridge (1).py
+!/flow_scene_builder (1).py
+!/candidate_selection (1).py
+!/tests/* (1).py
+!/tests/* (1).test.mjs
+# Machine-local state and browser profiles never belong in source archives.
+account_holds.json
+submission_gate.json
+ui_lease.json
+controller*.json
+controller*.lock
+manifest.json
+!extension/manifest.json
+*receipt*.json
+session_profile/
+manual_profile/
+settings.local.json

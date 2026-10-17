@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {flowDom} from '../extension/flow_dom.js';
+import {FlowClient} from '../extension/flow_client.js';
 
 async function failure(text){
   const priorDocument=globalThis.document;
@@ -27,4 +28,15 @@ test('ordinary no-charge audio failures retain the bounded retry contract',async
   const result=await failure('Falha ao gerar audio. Não foi cobrado.');
   assert.equal(result.kind,null);
   assert.equal(result.retriable,true);
+});
+
+test('extension advice never exempts unusual activity from a shared account hold',async()=>{
+  for(const text of ['Notamos uma atividade incomum. As extensões do navegador que modificam a página podem causar problemas.',
+                     'We noticed unusual activity. Browser extensions modifying the page may cause problems.',
+                     'Automation detected. You have not been charged.']){
+    const result=await failure(text);
+    assert.equal(result.kind,'account_limit');assert.equal(result.retriable,false);
+    const flow=new FlowClient(1);flow.dom=async()=>text;
+    await assert.rejects(flow.checkBlockers(),error=>error.kind==='account_limit');
+  }
 });

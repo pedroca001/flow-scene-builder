@@ -1,12 +1,17 @@
 // Read the button after the target tab is active. Layout may change on activation.
 export async function stableControlPoint(read, pause=ms=>new Promise(r=>setTimeout(r,ms))){
-  let prior=null;
-  for(let i=0;i<12;i++){
+  let prior=null, sawDisabled=false;
+  for(let i=0;i<20;i++){
     const point=await read();
-    if(!point||point.disabled)throw Error('Controle do Flow desabilitado; nenhum clique enviado.');
+    if(!point||point.disabled){
+      sawDisabled=true;
+      await pause(100);
+      continue;
+    }
     if(prior&&Math.abs(point.x-prior.x)<0.5&&Math.abs(point.y-prior.y)<0.5)return point;
     prior=point;await pause(100);
   }
+  if(sawDisabled&&!prior)throw Error('Controle do Flow desabilitado; nenhum clique enviado.');
   throw Error('Posicao do controle nao estabilizou; nenhum clique enviado.');
 }
 

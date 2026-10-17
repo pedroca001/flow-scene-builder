@@ -20,7 +20,7 @@ function fixture({ids=['prior'],pending=0,errors=0,project=job.project}={}){
   const flow={backToProject:async()=>calls.push('grid'),dom:async op=>op==='project'?{url:project}:({pending,errors}),
     send:async type=>calls.push(type),wait:async fn=>assert.equal(await fn(),true),ensureAllMedia:async()=>calls.push('allMedia'),
     inventory:async()=>ids.map(assetId=>({assetId})),configure:async()=>({credits:0}),verifyAccount:async()=>({email:job.account_email,home:job.project_creation.home})};
-  const host={ask:async(op,args)=>{calls.push(op);assert.equal(op,'retry_missing');assert.deepEqual(args.evidence,{asset_ids:ids,pending:0,errors:0});assert.equal(args.observation.credits,0);}};
+  const host={ask:async(op,args)=>{calls.push(op);assert.equal(op,'retry_missing');assert.deepEqual(args.evidence,{asset_ids:ids,pending:0,errors});assert.equal(args.observation.credits,0);}};
   return {calls,args:{flow,host,job,scene,seconds:8,withUi:async fn=>fn()}};
 }
 
@@ -29,10 +29,11 @@ test('a confirmed rejection refreshes the same project and reconciles before aut
   assert.deepEqual(f.calls,['grid','reload','allMedia','retry_missing']);
 });
 
-test('new video, pending generation or persisted error prevents any retry',async()=>{
-  for(const evidence of [{ids:['prior','new']},{pending:1},{errors:1}]){
+test('new video or pending generation prevents retry; a visible finished error permits the bounded same-scene retry',async()=>{
+  for(const evidence of [{ids:['prior','new']},{pending:1}]){
     const f=fixture(evidence);assert.equal(await recoverSubmission(f.args),false);assert.ok(!f.calls.includes('retry_missing'));
   }
+  const error=fixture({errors:1});assert.equal(await recoverSubmission(error.args),true);assert.ok(error.calls.includes('retry_missing'));
   const f=fixture({project:job.project+'/other'});await assert.rejects(recoverSubmission(f.args),/Projeto mudou/);assert.ok(!f.calls.includes('reload'));
 });
 

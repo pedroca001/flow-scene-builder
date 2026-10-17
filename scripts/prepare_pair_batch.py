@@ -380,7 +380,7 @@ def main():
         atomic(root/f'chats/chat_{number:02d}/job.json', dict(root=str(root),chat_number=number,visual_review=False,slots=slots))
     manifest = dict(version=1, batch_name=root.name, root=str(root),destination=str(Path(a.destination).resolve()),
                     quantity=len(pairs), image_quantity=len(pairs)*2, chats=chat_count,pairs_per_chat=a.pairs_per_chat,flow_parallel=20,
-                    account_email='bassi.volkov@gmail.com',flow_home=a.home,
+                    account_email='operator@example.invalid',flow_home=a.home,
                     visual_review=False,quality_regeneration=False,long_voice='slow_recipe',pairs=pairs)
     atomic(root/'manifest.json', manifest)
     print(json.dumps(dict(manifest=str(root/'manifest.json'),pairs=len(pairs),images=len(pairs)*2,chats=chat_count,flow_parallel=20)))

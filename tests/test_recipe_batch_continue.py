@@ -36,6 +36,6 @@ class RecipeWavesTests(unittest.TestCase):
                 with patch.object(runner, 'collect', return_value={'active': [{'id': '002'}]}):
                     runner.step(manifest, root / 'delivery')
                 self.assertEqual(start.call_count, 1)
-                (root / 'account_holds.json').write_text(json.dumps({'bassi.volkov@gmail.com': {'reason': 'quota'}}))
+                (root / 'account_holds.json').write_text(json.dumps({'operator@example.invalid': {'reason': 'quota'}}))
                 self.assertEqual(runner.step(manifest, root / 'delivery')['blocked'], 'account_hold')
                 self.assertEqual(start.call_count, 1)

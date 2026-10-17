@@ -4,7 +4,7 @@ import {FlowClient} from '../extension/flow_client.js';
 import {UI_PRIORITY} from '../extension/ui_queue.js';
 const old='11111111-1111-4111-8111-111111111111';
 const next='22222222-2222-4222-8222-222222222222';
-const client=rows=>{const f=new FlowClient(1);f.checkBlockers=async()=>{};f.videos=async()=>rows;f.inventory=async()=>rows;return f;};
+const client=rows=>{const f=new FlowClient(1);f.checkBlockers=async()=>{};f.dom=async()=>false;f.videos=async()=>rows;f.inventory=async()=>rows;return f;};
 
 test('RPC result polling refreshes only the saved project and finds the result without another submission',async()=>{
   const project='https://flow.google.com/u/2/project/saved';
@@ -61,7 +61,7 @@ test('ambiguous results pause and legacy recovery requires explicit binding',asy
 });
 test('only a new explicitly recoverable audio failure receives a verified bounded retry',async()=>{
   const f=client([{key:'candidate',assetId:next}]);let failed=true;let intents=0;let verified=false;
-  f.dom=async(op)=>{if(op==='audioFailures')return failed?[{key:'failure',retriable:true}]:[];
+  f.dom=async(op)=>{if(op==='gridState')return {needsRestore:false};if(op==='audioFailures')return failed?[{key:'failure',retriable:true}]:[];
     assert.equal(op,'retryAudio');assert.equal(intents,1);assert.ok(verified);failed=false;return true;};
   f.verify=async model=>{assert.equal(model,'lower');verified=true;};
   const result=await f.waitVideo([],Date.now(),()=>{},()=>false,null,{baseline:[],onRetry:async()=>{intents++;}});

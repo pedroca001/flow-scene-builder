@@ -5,13 +5,23 @@ import { projectMatchesHome, parallelIoEnabled } from './core.js';
 import { submitScene } from './scene_submission.js';
 import {recoverSubmission} from './submission_recovery.js';
 import { JobPool } from './job_pool.js';
-import { withUi, UI_PRIORITY } from './ui_queue.js';
+import { withUi as localUi, UI_PRIORITY } from './ui_queue.js';
 import { automationTabs } from './automation_tabs.js';
+import { projectAssetCache } from './project_asset_cache.js';
+import { profileRoute } from './profile_route.js';
+import { PRODUCTION_ROUTES } from './production_routes.js';
+import { sharedUi } from './shared_ui.js';
+import {cooldownProbe} from './cooldown_probe.js';
+import {frameDataUrl} from './frame_transfer.js';
+// Runtime revision bump 2: restart while the recovered job is already queued.
 const ownedTabs=automationTabs(chrome);
 const parallelIo=parallelIoEnabled(navigator.platform);
 let host=null;let connecting=false;const statuses=new Map();let reporting=Promise.resolve();
-function connect(){
-  const port=chrome.runtime.connectNative('com.pedro.flow_scene_builder');let sequence=0;let alive=true;const pending=new Map();
+async function connect(){
+  const route=await profileRoute(chrome,PRODUCTION_ROUTES);
+  if(!route)throw Error('Abra o projeto de producao autorizado neste perfil.');
+  if(route.tab&&!(await chrome.storage.local.get('automationWindow')).automationWindow)await ownedTabs.adopt(route.tab);
+  const port=chrome.runtime.connectNative(route.host);let sequence=0;let alive=true;const pending=new Map();
   port.onMessage.addListener(m=>{const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.result):p.reject(Error(m.error));}});
   port.onDisconnect.addListener(()=>{alive=false;const error=chrome.runtime.lastError?.message||'Programa local desconectado.';for(const p of pending.values())p.reject(Error(error));pending.clear();});
   return {get alive(){return alive;},close:()=>port.disconnect(),ask:(op,args={})=>new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});try{port.postMessage({id,op,...args});}catch(e){pending.delete(id);reject(e);}})};
@@ -23,7 +33,7 @@ async function report(values){
   reporting=reporting.catch(()=>{}).then(()=>chrome.storage.local.set({executor:{...values,updated:Date.now()},executorJobs:rows,executorParallelLimit:pool.limit}));
   return reporting;
 }
-const pool=new JobPool({limit:30,
+const pool=new JobPool({limit:30,idleRefillAttempts:30,
   claim:exclude=>host.ask('claim',{exclude}),run:job=>runJob(host,job),
   onError:async(error,job)=>report({status:'paused',folder:job.folder,error:String(error.message||error)}),
   onIdle:async()=>{await report({status:'idle'});host?.close();host=null;}
@@ -34,7 +44,7 @@ export async function tick(){
   try{
     if(host&&!host.alive&&!pool.active.size){host.close();host=null;}
     if(!host){
-      host=connect();const hello=await host.ask('hello',{build:BUILD_ID});
+      host=await connect();const hello=await host.ask('hello',{build:BUILD_ID});
       if(hello.reload){host.close();host=null;chrome.runtime.reload();return;}
       pool.limit=hello.max_parallel||10;
     }
@@ -67,9 +77,10 @@ async function projectTab(host,job){
     creation.status='created';
   }
   if(!tab?.url?.startsWith(job.project)){
-    tab=await ownedTabs.open(job.project);await chrome.storage.local.set({[key]:tab.id});
+    tab=await ownedTabs.open(job.project,{reuseProject:job.max_parallel===1});await chrome.storage.local.set({[key]:tab.id});
   }
-  const flow=new FlowClient(tab.id,dispatch);
+  const cache=await projectAssetCache(chrome.storage.local,job.project,job.account_email);
+  const flow=new FlowClient(tab.id,dispatch,{...cache,readFrame:()=>frameDataUrl(host,job.folder)});
   await flow.wait(async()=> (await flow.dom('project')).isProject);
   await flow.backToProject();
   if(job.project_mode==='new'&&creation.status!=='ready'){
@@ -85,15 +96,21 @@ async function uploadVideo(host,folder,scene,blob,candidate=null){
     await host.ask(candidate?'candidate_chunk':'chunk',{folder,scene,candidate,offset,data:btoa(data)});}
 }
 async function runJob(host,job){
+  const withUi=sharedUi(host,job.folder,localUi);
   try{
     await report({status:'starting',folder:job.folder});
     await host.ask('progress',{folder:job.folder,phase:'Criando ou recuperando projeto exclusivo'});
     const flow=await withUi(()=>projectTab(host,job),UI_PRIORITY.project);
     flow.withUi=(action,priority=UI_PRIORITY.poll)=>withUi(action,priority);
     await flow.verifyAccount(job.account_email,job.project_creation?.home);
+    if(job.cooldown_probe){
+      await host.ask('progress',{folder:job.folder,phase:'Conferindo o mesmo projeto apos dez minutos'});
+      const recovery=await cooldownProbe({flow,host,job,withUi});
+      if(!recovery.resume){await report({status:'paused',folder:job.folder,error:'Resultado anterior pendente; nova consulta em dez minutos.'});return;}
+    }
     while(true){
       const scene=await host.ask('next',{folder:job.folder});
-      if(scene.status==='ready_to_render'){await report({status:'rendering',folder:job.folder});await host.ask('render',{folder:job.folder});await report({status:'complete',folder:job.folder});await ownedTabs.retire(flow.tabId,job.project).catch(()=>{});return;}
+      if(scene.status==='ready_to_render'){await report({status:'rendering',folder:job.folder});await host.ask('render',{folder:job.folder});await report({status:'complete',folder:job.folder});await ownedTabs.retire(flow.tabId,job.project,{keepProjectAnchor:job.max_parallel===1}).catch(()=>{});return;}
       if(scene.status==='complete')return;
       await report({status:scene.number>1||scene.status==='submitted'?'running':'starting',folder:job.folder,scene:scene.number});
       const outputs=scene.outputs_per_prompt||1;
@@ -141,13 +158,23 @@ async function runJob(host,job){
         await host.ask('select_candidate',{folder:job.folder,scene:scene.number});
         if(scene.number<(scene.scene_count||4))await withUi(()=>flow.backToProject(),UI_PRIORITY.download);continue;
       }
-      const retryOptions=Array.isArray(failures)?{...refreshOptions,baseline:failures,onRetry:!job.manual_send&&job.audio_retry_limit!==0&&(job.model_key||'lower')==='lower'?async key=>{await flow.verifyAccount(job.account_email,job.project_creation?.home);return host.ask('retry_audio',{folder:job.folder,scene:scene.number,failure_key:key});}:null}:null;
+      const retryOptions=Array.isArray(failures)?{...refreshOptions,baseline:failures,onRetry:!job.manual_send&&job.audio_retry_limit!==0&&(job.model_key||'lower')==='lower'?async key=>{
+        await flow.verifyAccount(job.account_email,job.project_creation?.home);
+        if(Number(job.min_submission_interval_seconds)>0){
+          while(true){const gate=await host.ask('submission_gate',{folder:job.folder,scene:scene.number});if(gate.ready)break;await sleep(Math.min(30000,Math.max(250,gate.wait_ms)));}
+        }
+        return host.ask('retry_audio',{folder:job.folder,scene:scene.number,failure_key:key});
+      }:null,onRetried:Number(job.min_submission_interval_seconds)>0?()=>host.ask('submission_observed',{folder:job.folder,scene:scene.number,kind:'audio_retry'}):null}:null;
       const card=job.model_key==='lite'&&!scene.result_asset_id?(await flow.waitCandidates(baseline,Date.now(),failures||[],1,refreshOptions)).cards[0]:await flow.waitVideo(baseline,Date.now(),()=>{},()=>false,scene.result_asset_id,retryOptions);
       await host.ask('result',{folder:job.folder,scene:scene.number,media_id:card.assetId});
       await host.ask('progress',{folder:job.folder,phase:`Cena ${scene.number}: download`});
-      const blob=parallelIo?await flow.concurrentOriginalDownload(card):await withUi(()=>flow.originalDownload(card),100);
-      await uploadVideo(host,job.folder,scene.number,blob);
-      await host.ask('ingest',{folder:job.folder,scene:scene.number,media_id:card.assetId});
+      const downloaded=await withUi(()=>flow.programmaticDownload(card),UI_PRIORITY.download);
+      if(downloaded.captured_export){
+        await host.ask('progress',{folder:job.folder,phase:`Cena ${scene.number}: transferencia local`});
+        await uploadVideo(host,job.folder,scene.number,downloaded.blob);
+        await host.ask('progress',{folder:job.folder,phase:`Cena ${scene.number}: verificacao local`});
+        await host.ask('ingest',{folder:job.folder,scene:scene.number,media_id:card.assetId,download_method:'file_export_capture'});
+      }else await host.ask('ingest_programmatic_download',{folder:job.folder,scene:scene.number,...downloaded});
       if(scene.number<(scene.scene_count||4))await withUi(()=>flow.backToProject(),UI_PRIORITY.download);
     }
   }catch(e){
@@ -156,7 +183,7 @@ async function runJob(host,job){
     if(job?.project&&!/login|captcha|colheita|termos|conta|account|quota|credit|crédito|limit/i.test(error)){
       const key='automationTab:'+job.folder;
       const saved=await chrome.storage.local.get(key);
-      if(saved[key])await ownedTabs.retire(saved[key],job.project).catch(()=>{});
+      if(saved[key])await ownedTabs.retire(saved[key],job.project,{keepProjectAnchor:job.max_parallel===1}).catch(()=>{});
     }
   }
 }

@@ -1,11 +1,11 @@
 import { flowDom } from './flow_dom.js';
-import { harvestAppRequest, replayAppRequest } from './recaptcha_submission.js';
 import { stableControlPoint, waitForVisibleInput } from './trusted_control.js';
 import { isLocalPngPath } from './core.js';
+import {downloadMedia} from './programmatic_download.js';
+import {reloadProject} from './reload_project.js';
 const allowed = url => { const u=new URL(url);return u.protocol==='https:' && (u.hostname==='flow.google.com'||u.hostname==='labs.google'); };
 const queues = new Map();
 let inputTail=Promise.resolve();
-const harvested=new Map();
 async function debug(tabId, action) {
   const prior=inputTail;
   const task=prior.catch(()=>{}).then(async()=>{
@@ -48,6 +48,8 @@ async function debug(tabId, action) {
   queues.set(tabId,task);try{return await task;}finally{if(queues.get(tabId)===task)queues.delete(tabId);}
 }
 async function clickControl(send,tabId,names){
+    let pressAttempted=false;
+    try{
     const locate=async()=>{
       const [{result}]=await chrome.scripting.executeScript({target:{tabId:tabId},world:'MAIN',func:flowDom,args:['point',{names:names}]});
       if(result?.error)throw Error(result.error);
@@ -58,59 +60,45 @@ async function clickControl(send,tabId,names){
     await new Promise(r=>setTimeout(r,100));
     point=await stableControlPoint(locate);
     const [{result:inputState}]=await chrome.scripting.executeScript({target:{tabId:tabId},world:'MAIN',func:a=>{
-      const hit=document.elementFromPoint(a.point.x,a.point.y)?.closest('button,[role="button"]');
-      const label=hit?.getAttribute('aria-label')||hit?.textContent?.trim()||null;
+      const hit=document.elementFromPoint(a.point.x,a.point.y)?.closest('button,[role="button"],[role="menuitem"]');
+      const label=(hit?.getAttribute('aria-label')||hit?.querySelector('.label')?.textContent||hit?.textContent||'').replace(/\s+/g,' ').trim()||null;
       return {focused:document.hasFocus(),visibility:document.visibilityState,hitLabel:label?.slice(0,80),hitMatches:a.names.includes(label),dpr:devicePixelRatio};
     },args:[{point,names:names}]});
     if(inputState?.hitMatches===false)throw Error('Controle de geracao encoberto; nenhum clique enviado.');
     const windows=/win/i.test(navigator.platform||'');
-    if(inputState?.visibility==='hidden'||inputState?.focused===false){const error=Error('Janela do Flow ficou oculta ou sem foco antes do clique; nenhum input enviado.');error.beforeInput=true;throw error;}
+    if(inputState?.visibility==='hidden'||inputState?.focused===false){const error=Error('Janela do Flow ficou oculta ou sem foco antes do clique; nenhum input enviado.');error.beforeInput=true;error.focusLost=true;throw error;}
     const zoom=windows&&chrome.tabs.getZoom?await chrome.tabs.getZoom(tabId):null;
+    pressAttempted=true;
     await send('Input.dispatchMouseEvent',{type:'mousePressed',x:point.x,y:point.y,button:'left',buttons:1,modifiers:0,clickCount:1});
     if(windows)await new Promise(r=>setTimeout(r,50));
     await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:point.x,y:point.y,button:'left',buttons:0,modifiers:0,clickCount:1});
     return {inputState,zoom,point:{x:point.x,y:point.y}};
-}
-export async function dispatch(m) {
-  const tab=await chrome.tabs.get(m.tabId);
-  if(!allowed(tab.url)) throw Error('Abra o Flow na aba da automacao.');
-  if(m.type==='harvestGeneration')return debug(m.tabId,async send=>{
-    if(harvested.has(m.tabId))throw Error('Colheita anterior ainda nao reconciliada.');
-    const request=await harvestAppRequest({tabId:m.tabId,pageUrl:tab.url,send,events:chrome.debugger.onEvent,
-      click:()=>clickControl(send,m.tabId,['Start generation','Iniciar geração','Gerar'])});
-    const handle=crypto.randomUUID();
-    const timer=setTimeout(()=>harvested.delete(m.tabId),60000);
-    harvested.set(m.tabId,{handle,request,created:Date.now(),timer});
-    return {handle,rpc:request.rpc,requestAborted:true};
-  });
-  if(m.type==='discardHarvest'){
-    const saved=harvested.get(m.tabId);
-    if(saved?.handle===m.handle){clearTimeout(saved.timer);harvested.delete(m.tabId);}return true;
-  }
-  if(m.type==='replayGeneration'){
-    const saved=harvested.get(m.tabId);
-    if(!saved||saved.handle!==m.handle)throw Error('Token ausente ou ja consumido; nao repetir.');
-    clearTimeout(saved.timer);harvested.delete(m.tabId); // Consume before any network operation.
-    const captureToSendMs=Date.now()-saved.created;
-    if(captureToSendMs>45000||tab.url!==saved.request.pageUrl)throw Error('Token expirou ou projeto mudou; nenhum reenvio.');
-    const [{result}]=await chrome.scripting.executeScript({target:{tabId:m.tabId},world:'MAIN',func:replayAppRequest,args:[saved.request]});
-    if(!result?.ok){
-      const error=Error(`Flow recusou ou nao confirmou o envio: ${result?.error||'delivery_uncertain'}.`);
-      error.rpcError=result?.error||'delivery_uncertain';error.httpStatus=result?.httpStatus||0;error.definitiveRejection=result?.definitiveRejection===true;error.captureToSendMs=captureToSendMs;
-      if(result?.error==='PUBLIC_ERROR_UNUSUAL_ACTIVITY')error.kind='recaptcha_rejected';
-      else if(result?.httpStatus===429||/THROTTL|QUOTA|LIMIT|RESOURCE_EXHAUSTED/.test(result?.error||''))error.kind='account_limit';
+    }catch(error){
+      // Missing/covered controls are proven unsent only before the first press
+      // command. A failed press RPC itself can have reached Chrome.
+      if(!pressAttempted)error.beforeInput=true;
       throw error;
     }
-    return {ok:true,captureToSendMs};
+}
+export async function dispatch(m) {
+  if(['harvestGeneration','replayGeneration'].includes(m.type))throw Error('Captura e replay de reCAPTCHA desativados; use os controles normais do Flow.');
+  if(m.type==='clickControl'){
+    for(let attempt=0;attempt<3;attempt++){
+      let actionStarted=false;
+      try{return await debug(m.tabId,send=>{actionStarted=true;return clickControl(send,m.tabId,m.names);});}
+      catch(error){
+        if(!actionStarted)error.beforeInput=true;
+        // A focus race before mousePressed cannot have submitted anything.
+        // Reacquire focus and geometry, never repeat a press or an unknown RPC.
+        if(error.beforeInput===true&&error.focusLost===true&&attempt<2)continue;
+        throw error;
+      }
+    }
   }
+  const tab=await chrome.tabs.get(m.tabId);
+  if(!allowed(tab.url)) throw Error('Abra o Flow na aba da automacao.');
   if(m.type==='reload'){
-    await new Promise((resolve,reject)=>{
-      const cleanup=()=>{clearTimeout(timer);chrome.tabs.onUpdated.removeListener(updated);};
-      const updated=(id,change)=>{if(id===m.tabId&&change.status==='complete'){cleanup();resolve();}};
-      const timer=setTimeout(()=>{cleanup();reject(Error('Recarregamento do projeto nao concluiu.'));},60000);
-      chrome.tabs.onUpdated.addListener(updated);
-      chrome.tabs.reload(m.tabId).catch(error=>{cleanup();reject(error);});
-    });return true;
+    return reloadProject(chrome,m.tabId);
   }
   if(m.type==='dom') {
     const [{result}]=await chrome.scripting.executeScript({target:{tabId:m.tabId},world:'MAIN',func:flowDom,args:[m.op,m.args||{}]});
@@ -135,7 +123,30 @@ export async function dispatch(m) {
       await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:point.x,y:point.y,button:'left',buttons:0,clickCount});
     }
   });
-  if(m.type==='clickControl') return debug(m.tabId,send=>clickControl(send,m.tabId,m.names));
+  if(m.type==='programmaticDownload'){
+    const tab=await chrome.tabs.get(m.tabId);if(!allowed(tab.url))throw Error('Aba nao pertence ao Flow.');
+    const [{result}]=await chrome.scripting.executeScript({target:{tabId:m.tabId},world:'MAIN',func:flowDom,args:['downloadSource',{assetId:m.assetId}]});
+    if(result?.error)throw Error(result.error);if(!result||result.assetId!==m.assetId)throw Error('Fonte do asset nao carregou.');
+    return downloadMedia(chrome,{url:result.url,assetId:m.assetId});
+  }
+  if(m.type==='downloadOriginal')return debug(m.tabId,async send=>{
+    const dom=async(op,args={})=>{
+      const [{result}]=await chrome.scripting.executeScript({target:{tabId:m.tabId},world:'MAIN',func:flowDom,args:[op,args]});
+      if(result?.error)throw Error(`Download original (${op}): ${result.error}`);
+      return result;
+    };
+    if(await dom('assetId')!==m.assetId)throw Error('Asset mudou antes do download original; nenhum clique enviado.');
+    await dom('clickControl',{names:['Download media']});
+    let ready=false;
+    for(let attempt=0;attempt<25;attempt++){
+      if(await dom('exists',{names:['720p']})){ready=true;break;}
+      await new Promise(resolve=>setTimeout(resolve,600));
+    }
+    if(!ready)throw Error('Opcao original 720p nao abriu; nenhum download iniciado.');
+    await dom('armDownload');
+    try{return await clickControl(send,m.tabId,['720p']);}
+    catch(error){await dom('releaseDownload').catch(()=>{});throw Error(`Download original (720p): ${error.message}`);}
+  });
   if(m.type==='hover') return debug(m.tabId,async send=>{
     await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:m.x,y:m.y});
   });

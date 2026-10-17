@@ -2,7 +2,7 @@ import { assertSettings, sameFlowProject } from './core.js';
 import { UI_PRIORITY } from './ui_queue.js';
 export const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export class FlowClient {
-  constructor(tabId,transport=null,environment={}){this.tabId=tabId;this.transport=transport;this.environment=environment;this.assetIds=new Map();this.withUi=action=>action();}
+  constructor(tabId,transport=null,environment={}){this.tabId=tabId;this.transport=transport;this.environment=environment;this.assetIds=environment.assetIds||new Map();this.withUi=action=>action();}
   get platform(){return this.environment.platform??(globalThis.navigator?.platform||globalThis.navigator?.userAgent||'');}
   async send(type,args={}){
     if(this.transport)return this.transport({type,tabId:this.tabId,...args});
@@ -13,10 +13,14 @@ export class FlowClient {
   async clickPoint(p,clickCount=1){if(p.disabled)throw Error('Controle do Flow desabilitado.');await this.send('click',{...p,clickCount});}
   async click(names){await this.dom('clickControl',{names});}
   async wait(fn,timeout=30000,why='resposta da interface'){const until=Date.now()+timeout;let last;while(Date.now()<until){try{const r=await fn();if(r)return r;}catch(e){last=e;}await sleep(600);}throw last||Error(`Tempo esgotado: ${why}.`);}
-  async checkBlockers(){const b=await this.dom('blockers');if(b){const error=Error(`Flow precisa de atencao: ${b}`);if(/quota|hit your limits|insufficient credits|not enough credits|créditos? insuficientes|limite.*gera|too many|muitas solicita|rate limit/i.test(b))error.kind='account_limit';throw error;}}
+  async checkBlockers(){const b=await this.dom('blockers');if(b){const error=Error(`Flow precisa de atencao: ${b}`);if(/unusual activity|atividade incomum|automation detected|detected automation|automa[çc][ãa]o detectada|quota|hit your limits|insufficient credits|not enough credits|créditos? insuficientes|limite.*gera|too many|muitas solicita|rate limit/i.test(b))error.kind='account_limit';throw error;}}
   async verifyAccount(expected,expectedHome=null){
     if(!expected)throw Error('Email da conta nao foi vinculado. Nenhuma geracao enviada.');
-    const account=await this.dom('account');
+    let account=await this.dom('account');
+    if(!account.email){
+      await this.checkBlockers();
+      account=await this.wait(async()=>{const current=await this.dom('account');return current.email?current:null;},15000,'identificacao visivel do Flow');
+    }
     if(account.email?.toLowerCase()!==expected.toLowerCase())throw Error('Conta visivel difere do email autorizado.');
     if(expectedHome&&account.home!==expectedHome)throw Error('Home visivel difere da sessao confirmada.');
     return account;
@@ -85,14 +89,34 @@ export class FlowClient {
     await this.wait(()=>this.dom('exists',{names:['Start','Início','Inicio']}),10000,'limpar compositor e encontrar Start');
     if(!await this.dom('assetExists',{name})){
       if(localPath){
-        await this.send('key',{key:'Escape'});
-        await this.send('uploadDrop',{path:localPath});
+        if(this.environment.readFrame){
+          await this.dom('dropImage',{dataUrl:await this.environment.readFrame(),name});
+        }else{
+          await this.send('key',{key:'Escape'});
+          await this.send('uploadDrop',{path:localPath});
+        }
       }else {if(!blob)throw Error('Imagem existente nao encontrada pelo nome exato; nenhum upload substituto.');const {asDataUrl}=await import('./store.js');await this.dom('dropImage',{dataUrl:await asDataUrl(blob),name});}
     }
   }
   async waitFrameUpload(name){
-    // Read-only upload wait is per tab. It does not need the global focus lease.
-    await this.wait(()=>this.dom('assetExists',{name}),120000,`asset de upload ${name}`);
+    const started=Date.now();let reconciled=false;
+    await this.wait(async()=>{
+      if(await this.dom('assetExists',{name}))return true;
+      // An accidental editor navigation or changed filter hides a successful
+      // upload. Restore the grid once, under the UI lease, without uploading
+      // the file a second time or extending the original timeout.
+      if(!reconciled&&Date.now()-started>=15000){
+        reconciled=true;
+        await this.withUi(async()=>{
+          await this.checkBlockers();
+          const project=await this.dom('project');
+          if(/\/edit\/[a-f0-9-]{36}$/i.test(project.url))await this.backToProject();
+          else await this.ensureAllMedia();
+        },UI_PRIORITY.scene);
+        return this.dom('assetExists',{name});
+      }
+      return false;
+    },120000,`asset de upload ${name}`);
   }
   async finishFrameUpload(name){
     // Current Flow can attach a freshly dropped upload automatically. Accept
@@ -100,10 +124,12 @@ export class FlowClient {
     if(await this.dom('frameMatches',{name}))return;
     const confirmAuto=async()=>{
       const state=await this.dom('frameState');
-      if(!state.hasImage||state.empty)return false;
+      if(!state.hasImage||state.empty||(state.chipCount!=null&&state.chipCount!==1))return false;
       await this.wait(()=>this.dom('frameSource'),120000,'carregar frame automatico');
-      await this.confirmFrame(name);
-      return true;
+      // The chip can appear before its final source identity is available.
+      // Re-check the exact named frame after the source loads instead of
+      // clicking a Start control that may already have disappeared.
+      return this.dom('frameMatches',{name});
     };
     if(await confirmAuto())return;
     try{await this.click(['Start','Início','Inicio']);}
@@ -112,18 +138,34 @@ export class FlowClient {
     await this.dom('chooseAsset',{name});
     // Confirm atomically only when the preview is ready, or accept the automatic-close path.
     try {
-      await this.wait(()=>this.dom('acceptFrame',{name}),120000,'carregar previa e anexar frame');
+      await this.wait(()=>this.dom('acceptFrame',{name,probeOnly:true}),120000,'carregar previa do frame');
+      if(await this.dom('exists',{names:['Add to prompt','Incluir no comando','Adicionar ao prompt','Adicionar ao comando']})){
+        await this.send('clickControl',{names:['Add to prompt','Incluir no comando','Adicionar ao prompt','Adicionar ao comando']});
+      }
     } catch (error) {
       const state=await this.dom('frameState');
       throw Error(`${error.message} Frame: ${JSON.stringify(state)}`);
     }
     // A selected start frame replaces the Start placeholder.
     await this.wait(async()=>!await this.dom('exists',{names:['Start','Início','Inicio']}));
-    await this.wait(()=>this.dom('frameSource'),30000,'carregar frame anexado');
+    await this.wait(()=>this.dom('frameSource'),120000,'carregar frame anexado');
     await this.confirmFrame(name);
   }
   async confirmFrame(name){
     if(await this.dom('frameMatches',{name}))return true;
+    // The composer chip and grid thumbnail may use different CDN paths for
+    // the same upload. Prefer their permanent Flow asset IDs when available.
+    // Older Flow layouts and offline fixtures do not expose permanent IDs.
+    // Treat those optional probes as unavailable and retain the verified
+    // preview comparison below.
+    let chipId=null,gridId=null;
+    try{chipId=await this.dom('frameAssetId',{name});}catch{}
+    try{gridId=await this.dom('imageAssetIdByName',{name});}catch{}
+    if(chipId&&gridId&&chipId===gridId)return true;
+    // The upload path clears every previous composer frame before dropping a
+    // uniquely named file. Some Flow builds strip UUIDs and serve different
+    // CDN paths, so the one loaded chip plus the one uniquely named grid asset
+    // is the strongest visible identity proof available in that layout.
     // Flow's grid thumbnail can use /asb/ while the chip uses flow-content.
     // Open the uniquely named image's read-only preview and compare that
     // loaded source with the chip, without using internal state or APIs.
@@ -155,48 +197,24 @@ export class FlowClient {
     if(expected!==source||await this.dom('frameSource')!==source)throw Error('Frame anexado difere do asset nomeado; nenhum envio.');
     return true;
   }
+  async getFrameAssetId(name){
+    const fromDom=await this.dom('frameAssetId',{name});
+    if(fromDom&&/^[a-f0-9-]{36}$/i.test(fromDom))return fromDom;
+    const fromGrid=await this.dom('imageAssetIdByName',{name});
+    if(fromGrid&&/^[a-f0-9-]{36}$/i.test(fromGrid))return fromGrid;
+    return null;
+  }
   async prompt(text){
     await this.dom('focusEditor');await this.send('text',{text,mac:this.platform.toLowerCase().includes('mac')});
     const actual=await this.dom('promptText');
     if(actual!==text.replace(/\s+/g,' ').trim())throw Error('O prompt no Flow ficou diferente do preset.');
   }
   async prepare(blob,name,prompt,model,localPath=null){await this.configure(model);await this.uploadFrame(blob,name,localPath);await this.prompt(prompt);return this.verify(model);}
-  async submit({harvest=false,outputs=1,onHarvested=null,onDelivery=null}={}){
-    await this.checkBlockers();
-    if(harvest){
-      if(typeof onHarvested!=='function')throw Error('Colheita exige recibo persistente antes do envio.');
-      const before=await this.dom('generationState');
-      if(before.pending)throw Error('Projeto ja tem geracao pendente; nenhum novo envio.');
-      const previous=(await this.dom('audioFailures')).map(f=>f.key);
-      const receipt=await this.send('harvestGeneration');
-      try{
-        if(receipt.requestAborted!==true)throw Error('Transporte nao confirmou o abort; nenhum replay.');
-        const state=await this.dom('generationState');
-        const rows=await this.dom('audioFailures');
-        if(state.videos!==before.videos||rows.length<previous.length||rows.length>previous.length+outputs)throw Error('Inventario mudou durante colheita; nenhum replay. '+JSON.stringify({before,after:state,failuresBefore:previous.length,failuresAfter:rows.length}));
-        const added=[...rows];
-        for(const key of previous){const index=added.findIndex(f=>f.key===key);if(index<0)throw Error('Inventario mudou durante colheita.');added.splice(index,1);}
-        if(added.some(f=>f.kind))throw Error('Conta bloqueada durante colheita; nenhum replay.');
-        // Current Flow may leave a pending placeholder or no failure tile when
-        // Fetch aborts locally. The CDP abort acknowledgement is authoritative.
-        // A reload after replay removes transient app placeholders.
-        const failures=rows.map(f=>f.key);
-        await onHarvested(failures,receipt.rpc,{requestAborted:true});
-        let delivery;
-        try{delivery=await this.send('replayGeneration',{handle:receipt.handle});}
-        catch(error){
-          if(onDelivery)await onDelivery({state:error.definitiveRejection===true?'rejected':'uncertain',reason:error.rpcError||'delivery_uncertain',http_status:error.httpStatus||0,definitive_rejection:error.definitiveRejection===true,capture_to_send_ms:error.captureToSendMs});
-          throw error;
-        }
-        if(onDelivery)await onDelivery({state:'accepted',http_status:200,definitive_rejection:false,capture_to_send_ms:delivery?.captureToSendMs});
-        // The aborted app call has no result to poll. Refresh the same project
-        // so the existing UUID/inventory pipeline sees the accepted generation.
-        await this.send('reload');
-        await this.wait(async()=>(await this.dom('project')).isProject,30000,'recuperar projeto apos envio');
-        return;
-      }finally{await this.send('discardHarvest',{handle:receipt.handle}).catch(()=>{});}
-    }
-    const before=await this.dom('generationState');
+  async submit({harvest=false,outputs=1,prompt=null,imgId=null,onHarvested=null,onDelivery=null}={}){
+    if(harvest)throw Error('Envio permitido somente pelos controles normais do Flow; captura ou replay de reCAPTCHA desativados.');
+    let before;
+    try{await this.checkBlockers();before=await this.dom('generationState');}
+    catch(error){error.beforeInput=true;throw error;}
     const clickEvidence=await this.send('clickControl',{names:['Start generation','Iniciar geração','Gerar']});
     try{
       await this.wait(async()=>{const after=await this.dom('generationState');return ['pending','videos','errors'].some(k=>after[k]>before[k]);},20000,'confirmar aceite da geracao no Flow; envio preservado para diagnostico');
@@ -206,6 +224,8 @@ export class FlowClient {
   async readyInventory(baseline,resultAssetId=null){
     // This is a read-only hint in this tab. Permanent IDs still decide which
     // result belongs to the saved submission, inside the serialized inventory.
+    const viewport=await this.dom('gridState');
+    if(viewport?.needsRestore===true)await this.withUi(()=>this.ensureAllMedia(),UI_PRIORITY.poll);
     const cards=await this.videos();
     const ready=cards.some(card=>{
       const id=this.assetIds.get(card.key);
@@ -218,15 +238,25 @@ export class FlowClient {
     await this.dom('openCard',{key:card.key});
     const assetId=await this.wait(()=>this.dom('assetId'),15000,'identificador permanente do asset');
     this.assetIds.set(card.key,assetId);
+    await this.environment.onAssetIdentified?.();
     await this.backToProject();
     await this.wait(async()=>(await this.videos()).length>0,15000,'carregar cartoes do projeto');
     return {...card,assetId};
   }
   async inventory(){
+    const viewport=await this.dom('gridState');
+    if(viewport?.needsRestore===true)await this.ensureAllMedia();
     const result=new Map();const checked=new Set();
-    // Re-read after every visit: Angular can replace the entire grid on navigation.
+    // Cached cards need no navigation or additional DOM round trip. Re-read
+    // only after visiting an unknown card, since Angular can replace the grid.
     for(let i=0;i<300;i++){
-      const cards=await this.videos();const card=cards.find(c=>!checked.has(c.key));
+      const cards=await this.videos();
+      for(const card of cards){
+        if(checked.has(card.key)||!this.assetIds.has(card.key))continue;
+        checked.add(card.key);const identified={...card,assetId:this.assetIds.get(card.key)};
+        result.set(identified.assetId,identified);
+      }
+      const card=cards.find(c=>!checked.has(c.key));
       if(!card)return [...result.values()];
       checked.add(card.key);const identified=await this.identifyCard(card);result.set(identified.assetId,identified);
     }
@@ -237,10 +267,32 @@ export class FlowClient {
     const assetId=await this.wait(()=>this.dom('assetId'),15000,'abrir asset para download');
     if(assetId!==card.assetId)throw Error('Asset aberto difere do resultado esperado.');
     await this.wait(()=>this.dom('exists',{names:['Download media']}),15000,'menu de download do asset');
+    try{
+      // Focus, menu and final click must share one input lease. Focusing the
+      // window after opening the menu can dismiss it while Pedro works elsewhere.
+      await this.send('downloadOriginal',{assetId:card.assetId});
+      await this.wait(()=>this.dom('downloadLink'),30000,'arquivo de download original do Flow');
+    }catch(error){await this.dom('releaseDownload').catch(()=>{});throw error;}
+  }
+  async programmaticDownload(card){
+    await this.dom('openCard',{key:card.key});
+    await this.wait(async()=>await this.dom('assetId')===card.assetId,15000,'abrir o asset exato');
+    const source=await this.dom('downloadSource',{assetId:card.assetId});
+    if(source)return this.send('programmaticDownload',{assetId:card.assetId});
+    try{
+      await this.send('downloadOriginal',{assetId:card.assetId});
+      await this.wait(()=>this.dom('downloadLink'),120000,'exportacao programatica do arquivo');
+      return {captured_export:true,blob:await this.readOriginalDownload()};
+    }catch(error){await this.dom('releaseDownload').catch(()=>{});throw error;}
+  }
+  async prepareBrowserDownload(card){
+    await this.dom('openCard',{key:card.key});
+    const assetId=await this.wait(()=>this.dom('assetId'),15000,'abrir asset para download');
+    if(assetId!==card.assetId)throw Error('Asset aberto difere do resultado esperado.');
+    await this.wait(()=>this.dom('exists',{names:['Download media']}),15000,'menu de download do asset');
     await this.click(['Download media']);
     await this.wait(()=>this.dom('exists',{names:['720p']}),15000,'opcao original 720p');
-    await this.dom('armDownload');await this.click(['720p']);
-    await this.wait(()=>this.dom('downloadLink'),30000,'arquivo de download original do Flow');
+    return true;
   }
   async readOriginalDownload(){
     let offset=0;const parts=[];
@@ -315,6 +367,7 @@ export class FlowClient {
             await this.verify('lower');await failureOptions.onRetry(failures[0].key);
             await this.dom('retryAudio',{key:failures[0].key});
             await this.wait(async()=>!(await this.dom('audioFailures')).some(f=>f.key===failures[0].key),15000,'aceite da repeticao de audio');
+            if(failureOptions.onRetried)await failureOptions.onRetried();
           },UI_PRIORITY.result);
           continue;
         }
@@ -323,7 +376,7 @@ export class FlowClient {
       await this.checkBlockers();
       const observed=await this.readyInventory(baseline,resultAssetId);
       const found=observed.filter(v=>resultAssetId?v.assetId===resultAssetId:!baseline.includes(v.assetId));
-      if(found.length>1)throw Error('Mais de um resultado novo. Pausei para evitar encadear a cena errada.');
+      if(found.length>1)throw Error('Mais de um resultado novo. Reconciliar IDs antes de encadear, sem novo envio.');
       if(found.length===1)return found[0];
       const reloaded=await this.refreshSubmittedProject(failureOptions,lastReload);
       if(reloaded!==lastReload){lastReload=reloaded;continue;}

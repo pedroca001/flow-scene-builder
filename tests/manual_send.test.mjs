@@ -28,10 +28,30 @@ test('Mac default retains original transaction',async()=>{
   const f=fixture(false,false);await submitScene(f.args);
   assert.ok(f.calls.includes('prompt'));assert.ok(f.calls.includes('send'));assert.ok(!f.calls.includes('attach'));
 });
-test('recaptcha mode uses automatic canonical prompt with a persisted abort receipt',async()=>{
+test('legacy capture mode is rejected before upload, prompt or submission',async()=>{
   const f=fixture(true);f.args.job.recaptcha_harvest=true;
-  f.args.flow.submit=async options=>{assert.equal(options.harvest,true);assert.equal(options.outputs,1);f.calls.push('send');await options.onHarvested(['a'.repeat(64)],'MZZa6b',{requestAborted:true});};
-  const result=await submitScene(f.args);
-  assert.ok(f.calls.includes('prompt'));assert.ok(f.calls.includes('send'));assert.ok(f.calls.includes('harvested'));assert.ok(!f.calls.includes('manual_ready'));
-  assert.deepEqual(result.failures,[]);
+  await assert.rejects(submitScene(f.args),/captura desativado/);
+  assert.deepEqual(f.calls,[]);
+});
+
+test('shared project baseline retains saved assets absent from virtualized grid',async()=>{
+  const f=fixture(false);f.args.scene.known_project_asset_ids=['old-hidden','old-visible'];
+  f.args.flow.inventory=async()=>[{assetId:'old-visible'},{assetId:'visible'}];
+  let saved;
+  f.args.host.ask=async(op,args)=>{if(op==='submitted')saved=args;return true;};
+  await submitScene(f.args);
+  assert.deepEqual(saved.baseline,['old-hidden','old-visible','visible']);
+});
+
+test('cadence acknowledgement is persisted only after the normal click is accepted',async()=>{
+  const f=fixture(false);f.args.job.min_submission_interval_seconds=120;let clicked=false;const events=[];
+  f.args.flow.submit=async()=>{clicked=true;events.push('click accepted');};
+  f.args.host.ask=async(op)=>{
+    if(op==='submission_gate')return {ready:true};
+    if(op==='submitted')events.push('reserved');
+    if(op==='submission_observed'){assert.ok(clicked);events.push('observed');}
+    return true;
+  };
+  await submitScene(f.args);
+  assert.deepEqual(events,['reserved','click accepted','observed']);
 });

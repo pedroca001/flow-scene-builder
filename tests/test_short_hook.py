@@ -47,6 +47,12 @@ class ShortHookTests(unittest.TestCase):
                 self.assertEqual(joined['recipe_sha256'], f.digest(f.verify(wrong_folder)['final']))
                 with self.assertRaisesRegex(ValueError, 'already exists'):
                     compose(folder, wrong_folder, root / 'joined')
+                # Two profile lanes publish distinct names in one Downloads folder.
+                named=compose(folder,wrong_folder,root/'joined',output_name='037.mp4',receipt_path=root/'receipts/037.json')
+                resumed=compose(folder,wrong_folder,root/'joined',output_name='037.mp4',receipt_path=root/'receipts/037.json')
+                self.assertEqual(named,resumed)
+                second=compose(folder,wrong_folder,root/'joined',output_name='169.mp4',receipt_path=root/'receipts/169.json')
+                self.assertNotEqual(named['final'],second['final'])
             finally:
                 if old is None:
                     os.environ.pop('FLOW_WORK_ROOT', None)

@@ -110,8 +110,10 @@ export class PlaywrightTransport{
   }
   async destination(path){
     if(!this.downloadRoot)throw Error('Destino de download nao configurado.');
-    const root=await realpath(this.downloadRoot),target=resolve(path),candidate=relative(root,target);
-    if(!candidate||candidate==='..'||candidate.startsWith('..'+sep)||isAbsolute(candidate))throw Error('Download fora do runtime proprio rejeitado.');
+    const declaredRoot=resolve(this.downloadRoot),target=resolve(path);
+    const lexicalCandidate=relative(declaredRoot,target);
+    if(!lexicalCandidate||lexicalCandidate==='..'||lexicalCandidate.startsWith('..'+sep)||isAbsolute(lexicalCandidate))throw Error('Download fora do runtime proprio rejeitado.');
+    const root=await realpath(declaredRoot),candidate=lexicalCandidate;
     let ancestor=dirname(target);
     while(true){try{ancestor=await realpath(ancestor);break;}catch(e){if(e.code!=='ENOENT')throw e;const next=dirname(ancestor);if(next===ancestor)throw e;ancestor=next;}}
     const ancestorDiff=relative(root,ancestor);
